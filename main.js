@@ -91,26 +91,59 @@ module.exports.loop = function () {
         }
     }
 
-    // ========== 5. 观察者撤退 → 转换兵种 ==========
+    // ========== 5. 观察者回家 → 转换兵种 ==========
     for (var obsName in Game.creeps) {
         var obsCreep = Game.creeps[obsName];
         if (obsCreep.memory.role !== 'observer') continue;
-        if (obsCreep.memory.state !== 'retreating') continue;
         if (obsCreep.room.name !== obsCreep.memory.homeRoom) continue;
 
-        // 到家了 → 根据局势转换
+        // 只处理需要转换的状态: retreating(紧急撤退) 或 idle(全部探索完)
+        if (obsCreep.memory.state !== 'retreating' && obsCreep.memory.state !== 'idle') continue;
+
+        // 到家了 → 根据局势选择新兵种
         var homeRoom = obsCreep.room;
         var hostilesHere = homeRoom.memory.hostile && homeRoom.find(FIND_HOSTILE_CREEPS).length > 0;
 
-        if (hostilesHere) {
-            obsCreep.memory.role = 'soldier';
-            obsCreep.memory.working = true;
-            console.log('🔄 [转换] ' + obsCreep.name + ' 观察者→士兵 (家园防御)');
-        } else {
-            obsCreep.memory.role = 'upgrader';
-            obsCreep.memory.working = false;
-            console.log('🔄 [转换] ' + obsCreep.name + ' 观察者→升级者 (待命)');
+        var newRole = pickConversionRole(obsCreep, hostilesHere);
+        obsCreep.memory.role = newRole;
+        obsCreep.memory.working = (newRole === 'soldier');
+        console.log('🔄 [转换] ' + obsCreep.name + ' 观察者→' + newRole);
+    }
+
+    // ========== 5b. 侦察兵卡住 → 回家转换 ==========
+    for (var scName in Game.creeps) {
+        var scCreep = Game.creeps[scName];
+        if (scCreep.memory.role !== 'scout') continue;
+        if (!scCreep.memory.convertAtHome) continue;
+        if (scCreep.room.name !== scCreep.memory.homeRoom) continue;
+
+        var newRole = pickConversionRole(scCreep,
+            scCreep.room.memory.hostile && scCreep.room.find(FIND_HOSTILE_CREEPS).length > 0);
+        scCreep.memory.role = newRole;
+        scCreep.memory.working = (newRole === 'soldier');
+        console.log('🔄 [转换] ' + scCreep.name + ' 侦察兵→' + newRole);
+    }
+
+    // ========== 5c. 兜底: 在家停着不动的 scout/observer 全部转换 ==========
+    for (var idleName in Game.creeps) {
+        var idleCreep = Game.creeps[idleName];
+        if (idleCreep.memory.role !== 'scout' && idleCreep.memory.role !== 'observer') continue;
+        if (idleCreep.room.name !== idleCreep.memory.homeRoom) continue;
+
+        // observer: 跳过已经在新状态机里的
+        if (idleCreep.memory.role === 'observer') {
+            var validObsStates = ['exploring', 'returning', 'retreating', 'idle'];
+            if (validObsStates.indexOf(idleCreep.memory.state || '') !== -1) continue;
         }
+        // scout: 跳过已经有 convertAtHome 标记的（会在 5b 处理）
+        if (idleCreep.memory.role === 'scout' && idleCreep.memory.convertAtHome) continue;
+
+        // 走到这里说明是卡在旧状态的 → 强制转换
+        var newRole = pickConversionRole(idleCreep,
+            idleCreep.room.memory.hostile && idleCreep.room.find(FIND_HOSTILE_CREEPS).length > 0);
+        console.log('🔄 [强制转换] ' + idleCreep.name + ' ' + idleCreep.memory.role + '→' + newRole);
+        idleCreep.memory.role = newRole;
+        idleCreep.memory.working = (newRole === 'soldier');
     }
 
     // ========== 6. 战报摘要（每 20 tick 打印一次） ==========
@@ -192,6 +225,31 @@ function checkSafeMode(room) {
 
 
 // ================================================================
+//  🔄 观察者转换兵种选择（根据房间需求）
+// ================================================================
+function pickConversionRole(creep, hostilesHere) {
+    if (hostilesHere) return 'soldier';
+
+    var room = creep.room;
+    var counts = {};
+    for (var name in Game.creeps) {
+        var r = Game.creeps[name].memory.role;
+        counts[r] = (counts[r] || 0) + 1;
+    }
+
+    // 缺采集者 → 变采集者
+    if ((counts.harvester || 0) < 2) return 'harvester';
+
+    // 有建筑工地 → 变建造者
+    var sites = room.find(FIND_CONSTRUCTION_SITES);
+    if (sites.length > 0 && (counts.builder || 0) < 1) return 'builder';
+
+    // 默认变升级者
+    return 'upgrader';
+}
+
+
+// ================================================================
 //  🗺️ 探索管理
 // ================================================================
 function checkExploration(room) {
@@ -200,6 +258,10 @@ function checkExploration(room) {
     var exits = Game.map.describeExits(room.name);
     for (var dir in exits) {
         var neighborRoom = exits[dir];
+
+        // 跳过已知无法到达的房间
+        if (Memory.unreachableRooms && Memory.unreachableRooms[neighborRoom]) continue;
+
         if (!Memory.explored[neighborRoom]) {
             room.memory.exploreTarget = neighborRoom;
             return;
@@ -245,10 +307,7 @@ function manageSpawning(spawn) {
         targets.soldier = 0;
     }
 
-    targets.scout = 0;
-    if (counts.scout < 1 && room.memory.exploreTarget) {
-        targets.scout = 1;
-    }
+    targets.scout = 0;  // 已废弃 — observer 替代了 scout 的功能
 
     // 观察者: 1-4 个，负责远行侦察
     // 注意: 观察者撤退回家后会被转换成其他兵种，所以需要持续补充
@@ -277,7 +336,7 @@ function manageSpawning(spawn) {
     }
 
     // ========== 优先级 ==========
-    var priorityOrder = ['soldier', 'observer', 'scout', 'harvester', 'builder', 'repairer', 'upgrader'];
+    var priorityOrder = ['soldier', 'harvester', 'builder', 'repairer', 'upgrader', 'observer'];
 
     var selectedRole = null;
     for (var pi = 0; pi < priorityOrder.length; pi++) {
@@ -335,16 +394,10 @@ function manageSpawning(spawn) {
         homeRoom: room.name
     };
 
-    // 如果是采集者，分配固定的能量源（防止反复横跳）
-    if (selectedRole === 'harvester') {
-        creepMemory.sourceId = assignHarvesterSource(room);
-    }
-
-    // 如果是观察者，设置初始状态和巡逻目标
+    // 如果是观察者，设置初始内存（不设 state，让 role.observer 的 _init 来处理）
     if (selectedRole === 'observer') {
-        creepMemory.state = 'observing';
+        // state 留空 → _init 会自动设为 'exploring' 或 'idle'
         creepMemory.lastHits = undefined;
-        // targetRoom 会在 role.observer 第一次 run 时自动分配
     }
 
     var result = spawn.spawnCreep(body, creepName, {
@@ -411,40 +464,6 @@ function calcBodyCost(body) {
     var c = 0;
     for (var i = 0; i < body.length; i++) c += BODYPART_COST[body[i]];
     return c;
-}
-
-
-// ================================================================
-//  ⛏️ 能量源分配（防止采集者反复横跳）
-// ================================================================
-function assignHarvesterSource(room) {
-    var sources = room.find(FIND_SOURCES);
-    if (sources.length === 0) return null;
-
-    // 统计每个源当前有多少采集者
-    var sourceCounts = {};
-    for (var name in Game.creeps) {
-        var c = Game.creeps[name];
-        if (c.memory.role === 'harvester' && c.memory.sourceId) {
-            if (c.room.name === room.name) {
-                sourceCounts[c.memory.sourceId] = (sourceCounts[c.memory.sourceId] || 0) + 1;
-            }
-        }
-    }
-
-    // 找采集者最少的源
-    var bestSource = sources[0];
-    var minCount = 99999;
-    for (var i = 0; i < sources.length; i++) {
-        var sid = sources[i].id;
-        var count = sourceCounts[sid] || 0;
-        if (count < minCount) {
-            minCount = count;
-            bestSource = sources[i];
-        }
-    }
-
-    return bestSource.id;
 }
 
 

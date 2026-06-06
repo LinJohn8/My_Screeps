@@ -1,34 +1,35 @@
 /**
- * 🗺️ 侦察兵 — 探索未知房间，记录信息
+ * 🗺️ 侦察兵 — 探索未知房间 → 卡住就回家转兵种
  *
- * 行为: 出生 → 走向目标房间 → 到达后记录信息 → 去下一个房间
+ * 行为: 出生 → 走向目标房间 → 到达后记录信息 → 下一个
+ *       无法到达（ERR_NO_PATH）→ 标记房间不可达 → 回家转换
  */
 var roleScout = {
 
     run: function (creep) {
 
-        // 设置探索目标
-        if (!creep.memory.scoutTarget) {
-            var homeRoom = creep.memory.homeRoom;
-            if (Memory.rooms[homeRoom] && Memory.rooms[homeRoom].exploreTarget) {
-                creep.memory.scoutTarget = Memory.rooms[homeRoom].exploreTarget;
-            } else {
-                var exits = Game.map.describeExits(homeRoom);
-                for (var dir in exits) {
-                    var neighbor = exits[dir];
-                    if (!Memory.explored || !Memory.explored[neighbor]) {
-                        creep.memory.scoutTarget = neighbor;
-                        break;
-                    }
-                }
-                if (!creep.memory.scoutTarget) {
-                    creep.suicide();
-                    return;
-                }
+        // 有回家转换标记 → 往老家走
+        if (creep.memory.convertAtHome) {
+            if (creep.room.name === creep.memory.homeRoom) {
+                // 到家了，等 main.js 处理转换
+                return;
             }
+            this._goHome(creep);
+            return;
+        }
+
+        // 设置探索目标（跳过已知不可达的房间）
+        if (!creep.memory.scoutTarget) {
+            this._pickTarget(creep);
         }
 
         var target = creep.memory.scoutTarget;
+        if (!target) {
+            // 没有可探索的房间了 → 回家转换
+            creep.memory.convertAtHome = true;
+            this._goHome(creep);
+            return;
+        }
 
         // 到达目标房间
         if (creep.room.name === target) {
@@ -36,24 +37,24 @@ var roleScout = {
 
             if (!Memory.explored) Memory.explored = {};
             Memory.explored[target] = true;
+            creep.memory.scoutTarget = null;
 
+            // 尝试从当前房间继续延伸
             var nextExits = Game.map.describeExits(target);
-            var nextTarget = null;
-            for (var d in nextExits) {
-                var nb = nextExits[d];
-                if (!Memory.explored[nb]) {
-                    nextTarget = nb;
-                    break;
+            if (nextExits) {
+                for (var d in nextExits) {
+                    var nb = nextExits[d];
+                    // 跳过不可达和已探索的房间
+                    if (Memory.unreachableRooms && Memory.unreachableRooms[nb]) continue;
+                    if (!Memory.explored || !Memory.explored[nb]) {
+                        creep.memory.scoutTarget = nb;
+                        return;
+                    }
                 }
             }
-            if (nextTarget) {
-                creep.memory.scoutTarget = nextTarget;
-            } else {
-                creep.memory.scoutTarget = creep.memory.homeRoom;
-                if (creep.room.name === creep.memory.homeRoom) {
-                    creep.suicide();
-                }
-            }
+            // 没有新房间可探 → 回家转换
+            creep.memory.convertAtHome = true;
+            this._goHome(creep);
             return;
         }
 
@@ -64,10 +65,75 @@ var roleScout = {
             maxRooms: 10
         });
 
+        // ERR_BUSY = 正在出生，忽略
+        if (err === ERR_BUSY) return;
+
         if (err === ERR_NO_PATH) {
-            console.log('⚠ 侦察兵无法到达: ' + target);
+            // 无法到达 → 标记 + 回家转换
+            if (!Memory.unreachableRooms) Memory.unreachableRooms = {};
+            Memory.unreachableRooms[target] = Game.time;
+            console.log('⚠ [侦察] ' + creep.name + ' 无法到达 ' + target + '，回家转换');
             creep.memory.scoutTarget = null;
+            creep.memory.convertAtHome = true;
+            this._goHome(creep);
         }
+    },
+
+    _pickTarget: function (creep) {
+        var homeRoom = creep.memory.homeRoom;
+        if (!homeRoom) return;
+
+        // 优先用主循环设置的 exploreTarget
+        if (Memory.rooms[homeRoom] && Memory.rooms[homeRoom].exploreTarget) {
+            var et = Memory.rooms[homeRoom].exploreTarget;
+            if (!Memory.unreachableRooms || !Memory.unreachableRooms[et]) {
+                creep.memory.scoutTarget = et;
+                return;
+            }
+        }
+
+        // 扫描老家出口
+        var exits = Game.map.describeExits(homeRoom);
+        if (exits) {
+            for (var dir in exits) {
+                var neighbor = exits[dir];
+                if (Memory.unreachableRooms && Memory.unreachableRooms[neighbor]) continue;
+                if (!Memory.explored || !Memory.explored[neighbor]) {
+                    creep.memory.scoutTarget = neighbor;
+                    return;
+                }
+            }
+        }
+
+        // 所有相邻都探过了 → 尝试更远的房间
+        if (exits) {
+            for (var dir2 in exits) {
+                var nb2 = exits[dir2];
+                var nbExits = Game.map.describeExits(nb2);
+                if (nbExits) {
+                    for (var d2 in nbExits) {
+                        var farRoom = nbExits[d2];
+                        if (Memory.unreachableRooms && Memory.unreachableRooms[farRoom]) continue;
+                        if (!Memory.explored || !Memory.explored[farRoom]) {
+                            creep.memory.scoutTarget = farRoom;
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // 真没有了 → 不设目标，后面会触发回家转换
+        creep.memory.scoutTarget = null;
+    },
+
+    _goHome: function (creep) {
+        var homeRoom = creep.memory.homeRoom;
+        if (!homeRoom) { creep.suicide(); return; }
+        creep.moveTo(new RoomPosition(25, 25, homeRoom), {
+            visualizePathStyle: { stroke: '#ff00ff' },
+            reusePath: 50
+        });
     }
 };
 

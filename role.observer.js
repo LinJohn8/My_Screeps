@@ -1,44 +1,84 @@
 /**
- * 👁️ 观察者 — 远行侦察／预警／应急转换
+ * 👁️ 观察者 — 深度优先探索 + 应急转换
  *
- * 核心设计:
- *   1. 默认去其他房间观察（记录敌人、玩家活动）
- *   2. 三种紧急撤退条件 → 回老家 → 转换兵种
- *   3. 灵魂是「活着的视野」，平时不消耗能量
+ * 行为模式:
+ *   1. 从老家选一个方向（上/下/左/右）→ 沿该方向一直走
+ *   2. 走到没路了（该方向无出口）→ 沿途记录房间情报 → 原路返回老家
+ *   3. 到家后换下一个方向继续
+ *   4. 四个方向都走完 → 转成其他兵种（采集/建造/升级）
  *
- * 撤退触发:
- *   - 家园被入侵（room.memory.hostile === true）
- *   - 自身血量 < 30%
- *   - 正在受到攻击（hits 比上一 tick 减少）
- *
- * 撤退后转换:
- *   - 主循环检测到 observer 已回到 homeRoom →
- *     有入侵 → 转 soldier；无入侵 → 转 upgrader
+ * 记忆结构:
+ *   state: 'exploring' | 'returning' | 'retreating' | 'idle'
+ *   direction: FIND_EXIT_TOP | FIND_EXIT_RIGHT | FIND_EXIT_BOTTOM | FIND_EXIT_LEFT
+ *   path: ['homeRoom', 'room1', 'room2', ...]  // 走过的房间链
+ *   visitedDirs: ['TOP', 'RIGHT', ...]           // 已完成的方向
  */
+
+// 四个基本方向
+var CARDINAL_DIRS = [
+    { key: 'TOP',    const: FIND_EXIT_TOP },
+    { key: 'RIGHT',  const: FIND_EXIT_RIGHT },
+    { key: 'BOTTOM', const: FIND_EXIT_BOTTOM },
+    { key: 'LEFT',   const: FIND_EXIT_LEFT }
+];
+
 var roleObserver = {
 
     run: function (creep) {
 
-        // 调试日志（每 20 tick 打印一次状态）
-        if (Game.time % 20 === 0) {
+        // 调试日志（每 30 tick）
+        if (Game.time % 30 === 0) {
             console.log('👁️ [观察者] ' + creep.name +
-                ' 状态=' + (creep.memory.state || 'observing') +
-                ' 目标=' + (creep.memory.targetRoom || '❌无') +
+                ' 状态=' + (creep.memory.state || '—') +
+                ' 方向=' + (creep.memory.direction || '—') +
+                ' 路径=' + (creep.memory.path ? creep.memory.path.length : 0) + '步' +
+                ' 已完成=' + (creep.memory.visitedDirs || []).length + '/4方向' +
                 ' 当前=' + creep.room.name +
                 ' 老家=' + creep.memory.homeRoom);
         }
 
-        // 1. 撤退条件检测（非撤退状态才检测）
+        // 初始化
+        this._init(creep);
+
+        // 撤退检测（所有状态下都检测）
         if (creep.memory.state !== 'retreating') {
             this.checkRetreat(creep);
         }
 
-        // 2. 按状态执行
-        if (creep.memory.state === 'retreating') {
-            this.retreat(creep);
-        } else {
-            this.observe(creep);
+        // 按状态执行
+        switch (creep.memory.state) {
+            case 'exploring': this.doExplore(creep); break;
+            case 'returning': this.doReturn(creep); break;
+            case 'retreating': this.doRetreat(creep); break;
+            case 'idle':
+            default:
+                // idle 状态 → 在老家静默等待 main.js 转换
+                break;
         }
+    },
+
+    // ================================================================
+    //  初始化（首次 run 时设置）
+    // ================================================================
+    _init: function (creep) {
+        // 已初始化的新状态（exploring/returning/retreating/idle）→ 跳过
+        var newStates = ['exploring', 'returning', 'retreating', 'idle'];
+        if (creep.memory.state && newStates.indexOf(creep.memory.state) !== -1) return;
+
+        var homeRoom = creep.memory.homeRoom;
+        var exits = Game.map.describeExits(homeRoom);
+
+        if (!exits || Object.keys(exits).length === 0) {
+            // sim 房间，没有出口 → 直接 idle
+            creep.memory.state = 'idle';
+            console.log('👁️ [观察者] ' + creep.name + ' ' + homeRoom + ' 无出口，转为待命');
+            return;
+        }
+
+        creep.memory.state = 'exploring';
+        creep.memory.path = [homeRoom];
+        creep.memory.visitedDirs = [];
+        creep.memory.direction = null; // 选方向在 doExplore 里做
     },
 
     // ================================================================
@@ -47,228 +87,200 @@ var roleObserver = {
     checkRetreat: function (creep) {
         var homeRoom = creep.memory.homeRoom;
 
-        // 条件1: 家园被入侵
         if (Memory.rooms[homeRoom] && Memory.rooms[homeRoom].hostile) {
             creep.memory.state = 'retreating';
             console.log('🏃 [观察者] ' + creep.name + ' 家园被入侵，紧急撤退');
             return;
         }
 
-        // 条件2: 自身血量过低
         if (creep.hits < creep.hitsMax * 0.3) {
             creep.memory.state = 'retreating';
-            console.log('🏃 [观察者] ' + creep.name + ' 血量过低(' + creep.hits + '/' + creep.hitsMax + ')，撤退');
+            console.log('🏃 [观察者] ' + creep.name + ' 血量过低，撤退');
             return;
         }
 
-        // 条件3: 正在受到攻击（hits 减少）
         if (creep.memory.lastHits !== undefined && creep.hits < creep.memory.lastHits) {
             creep.memory.state = 'retreating';
-            console.log('🏃 [观察者] ' + creep.name + ' 遭到攻击，紧急撤退');
+            console.log('🏃 [观察者] ' + creep.name + ' 遭到攻击，撤退');
             return;
         }
 
-        // 记录当前血量供下一 tick 比较
         creep.memory.lastHits = creep.hits;
     },
 
     // ================================================================
-    //  观察模式 — 去目标房间巡逻
+    //  探索 — 沿当前方向往前走
     // ================================================================
-    observe: function (creep) {
-        var homeRoom = creep.memory.homeRoom;
+    doExplore: function (creep) {
+        var path = creep.memory.path;
+        var currentRoom = creep.room.name;
 
-        // 自动设置目标房间（带重试冷却，不每 tick 重复）
-        if (!creep.memory.targetRoom && (!creep.memory.noTargetUntil || Game.time >= creep.memory.noTargetUntil)) {
-            creep.memory.targetRoom = this.pickTarget(creep);
-            if (creep.memory.targetRoom) {
-                creep.memory.noTargetUntil = undefined;
-                console.log('👁️ [观察者] ' + creep.name + ' 选定目标: ' + creep.memory.targetRoom);
-            } else {
-                // 找不到目标 → 50 tick 后再试
-                creep.memory.noTargetUntil = Game.time + 50;
-                if (Game.time % 50 === 0) {
-                    console.log('⚠️ [观察者] ' + creep.name + ' 没有可观察的房间');
+        // ---- 还没选方向 → 从老家选一个 ----
+        if (!creep.memory.direction) {
+            var dir = this._pickDirection(creep);
+            if (!dir) {
+                // 四个方向都走完了
+                creep.memory.state = 'idle';
+                console.log('👁️ [观察者] ' + creep.name + ' 全部方向探索完毕');
+                return;
+            }
+            creep.memory.direction = dir.const;
+            creep.memory.path = [creep.memory.homeRoom];
+
+            // 如果已经在老家，立即往该方向走
+            if (currentRoom === creep.memory.homeRoom) {
+                var nextRoom = this._getExitInDirection(creep, currentRoom, dir.const);
+                if (nextRoom) {
+                    this._moveToward(creep, nextRoom);
+                    if (creep.room.name !== currentRoom) {
+                        // 到了新房间
+                        creep.memory.path.push(creep.room.name);
+                        this.recordRoom(creep, creep.room.name);
+                    }
+                } else {
+                    // 这个方向也没有出口 → 标记已探索，递归重试
+                     creep.memory.visitedDirs.push(dir.key);
+                     creep.memory.direction = null;
                 }
             }
-        }
-
-        var target = creep.memory.targetRoom;
-        if (!target) {
-            // 没有可观察的房间 → 在 homeRoom 待命（静默）
             return;
         }
 
-        // ---- 已到达目标房间 ----
-        if (creep.room.name === target) {
-            this.patrol(creep, target);
+        // ---- 到达新房间 → 记录 + 尝试继续 ----
+        if (currentRoom !== path[path.length - 1]) {
+            path.push(currentRoom);
+            this.recordRoom(creep, currentRoom);
+        }
 
-            // 每 20 tick 记录一次当前房间信息
-            if (Game.time % 20 === 0) {
-                this.recordRoom(creep, target);
+        // ---- 尝试往当前方向继续走 ----
+        var nextRoom = this._getExitInDirection(creep, currentRoom, creep.memory.direction);
+
+        if (nextRoom && path.indexOf(nextRoom) === -1) {
+            // 前方有路且没去过 → 继续走
+            this._moveToward(creep, nextRoom);
+        } else {
+            // 没路了或已去过 → 此方向探索完毕
+            var dirInfo = this._dirConstToKey(creep.memory.direction);
+            if (dirInfo) {
+                creep.memory.visitedDirs.push(dirInfo.key);
+                console.log('👁️ [观察者] ' + creep.name + ' 方向 ' + dirInfo.key + ' 探索完毕，共 ' + path.length + ' 个房间');
             }
-            return;
+            creep.memory.direction = null;
+            creep.memory.state = 'returning';
         }
-
-        // ---- 前往目标房间 ----
-        this.moveToRoom(creep, target);
     },
 
     // ================================================================
-    //  选择观察目标
+    //  返程 — 沿路径往回走
     // ================================================================
-    pickTarget: function (creep) {
-        var homeRoom = creep.memory.homeRoom;
-        var exits = Game.map.describeExits(homeRoom);
+    doReturn: function (creep) {
+        var path = creep.memory.path;
+        var currentRoom = creep.room.name;
 
-        // 安全兜底: 没有出口信息（比如 sim 教学房间）
-        if (!exits) {
-            if (Game.time % 50 === 0) {
-                console.log('⚠️ [观察者] ' + creep.name + ' 房间 ' + homeRoom + ' 没有出口，无法探索');
+        // 到家了
+        if (currentRoom === creep.memory.homeRoom) {
+            // 清除路径（只剩老家）
+            creep.memory.path = [creep.memory.homeRoom];
+            // 尝试下一个方向
+            var nextDir = this._pickDirection(creep);
+            if (nextDir) {
+                creep.memory.state = 'exploring';
+                creep.memory.direction = nextDir.const;
+                console.log('👁️ [观察者] ' + creep.name + ' 换方向: ' + nextDir.key);
+                // 立即往新方向走
+                var nr = this._getExitInDirection(creep, currentRoom, nextDir.const);
+                if (nr) this._moveToward(creep, nr);
+            } else {
+                // 所有方向完成
+                creep.memory.state = 'idle';
+                console.log('👁️ [观察者] ' + creep.name + ' 全部方向探索完毕，等待转换');
             }
-            return null;
+            return;
         }
 
-        var observed = Memory.roomScout || {};
+        // 还没到家 → 往回走一格
+        if (path.length >= 2) {
+            var prevRoom = path[path.length - 2];
+            path.pop();
+            this._moveToward(creep, prevRoom);
+        } else {
+            // 路径异常，直接回老家
+            this._moveToward(creep, creep.memory.homeRoom);
+        }
+    },
 
-        // ---- 统计各房间已有观察者数量 ----
-        var observerCounts = {};
+    // ================================================================
+    //  撤退 — 直线回老家
+    // ================================================================
+    doRetreat: function (creep) {
+        if (creep.room.name === creep.memory.homeRoom) return;
+        this._moveToward(creep, creep.memory.homeRoom);
+    },
+
+    // ================================================================
+    //  选下一个要探索的方向（避开已完成的 + 其他观察者正在用的）
+    // ================================================================
+    _pickDirection: function (creep) {
+        var visited = creep.memory.visitedDirs || [];
+
+        // 统计其他观察者当前在用的方向
+        var usedDirs = {};
         for (var name in Game.creeps) {
             var c = Game.creeps[name];
-            if (c.memory.role === 'observer' && c.memory.targetRoom) {
-                observerCounts[c.memory.targetRoom] = (observerCounts[c.memory.targetRoom] || 0) + 1;
+            if (c.memory.role === 'observer' && c.id !== creep.id && c.memory.direction) {
+                var dk = this._dirConstToKey(c.memory.direction);
+                if (dk) usedDirs[dk.key] = true;
             }
         }
 
-        var bestRoom = null;
-        var bestScore = 99999;
-        var firstExit = null;   // 最终兜底
+        // 检查老家各方向是否有出口
+        var homeExits = Game.map.describeExits(creep.memory.homeRoom);
 
-        for (var dir in exits) {
-            var neighbor = exits[dir];
-            if (!firstExit) firstExit = neighbor;
+        for (var i = 0; i < CARDINAL_DIRS.length; i++) {
+            var d = CARDINAL_DIRS[i];
+            if (visited.indexOf(d.key) !== -1) continue;       // 已探索过
+            if (usedDirs[d.key]) continue;                      // 被其他观察者占用
 
-            var count = observerCounts[neighbor] || 0;
-
-            // 优先级: 无人 + 未探索 → 直接返回
-            if (count === 0) {
-                if (!Memory.explored || !Memory.explored[neighbor]) {
-                    console.log('👁️ [观察者] 选目标: ' + neighbor + ' (未探索,无人)');
-                    return neighbor;
-                }
-            }
-
-            // 评分: 观察者越少越好，已探索稍微扣分
-            var score = count * 10 + (observed[neighbor] ? 1 : 0);
-            if (score < bestScore) {
-                bestScore = score;
-                bestRoom = neighbor;
+            // 检查老家这个方向是否有出口
+            if (homeExits && homeExits[String(d.const)]) {
+                return d;
             }
         }
 
-        // ---- 相邻房间都有人/都已探索 → 扩散到二级相邻 ----
-        if (bestScore >= 10) {
-            for (var dir2 in exits) {
-                var nb = exits[dir2];
-                if (!observed[nb]) continue;
-
-                if (!observed[nb].exits) {
-                    var nbExits = Game.map.describeExits(nb);
-                    if (nbExits) {
-                        observed[nb].exits = nbExits;
-                    }
-                }
-                if (observed[nb].exits) {
-                    for (var d2 in observed[nb].exits) {
-                        var farRoom = observed[nb].exits[d2];
-                        if (!observerCounts[farRoom] || observerCounts[farRoom] === 0) {
-                            console.log('👁️ [观察者] 选目标(二级): ' + farRoom);
-                            return farRoom;
-                        }
-                    }
-                }
-            }
-        }
-
-        // ---- 最终兜底: 第一个出口 ----
-        if (!bestRoom) {
-            bestRoom = firstExit;
-        }
-
-        if (bestRoom) {
-            console.log('👁️ [观察者] 选目标(兜底): ' + bestRoom + ' 评分=' + bestScore);
-        }
-        return bestRoom;
+        return null; // 所有方向都试过了
     },
 
     // ================================================================
-    //  在目标房间巡逻（最小动作维持视野）
+    //  获取当前房间在指定方向的出口房间名
     // ================================================================
-    patrol: function (creep, roomName) {
-        // 每 5 tick 走一步，覆盖更多视野
-        if (Game.time % 5 === 0) {
-            // 检测当前房间是否有敌人
-            var room = Game.rooms[roomName];
-            if (room) {
-                var hostiles = room.find(FIND_HOSTILE_CREEPS);
-                if (hostiles.length > 0 && hostiles.length !== (creep.memory.lastHostileCount || 0)) {
-                    console.log('👁️ [观察者] ' + roomName + ' 发现敌人! 数量=' + hostiles.length);
-                    creep.memory.lastHostileCount = hostiles.length;
-                }
-                if (hostiles.length === 0) {
-                    creep.memory.lastHostileCount = 0;
-                }
-            }
-
-            // 沿边界小范围移动观察
-            var x = creep.pos.x;
-            var y = creep.pos.y;
-
-            // 靠边时往中间走
-            if (x < 5) {
-                creep.move(RIGHT);
-            } else if (x > 44) {
-                creep.move(LEFT);
-            } else if (y < 5) {
-                creep.move(BOTTOM);
-            } else if (y > 44) {
-                creep.move(TOP);
-            } else {
-                // 不在边界 → 随机走一步
-                var dirs = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
-                creep.move(dirs[Math.floor(Math.random() * dirs.length)]);
-            }
-        }
+    _getExitInDirection: function (creep, roomName, dirConst) {
+        var exits = Game.map.describeExits(roomName);
+        if (!exits) return null;
+        return exits[String(dirConst)] || null;
     },
 
     // ================================================================
-    //  撤退 — 返回老家
+    //  方向常量 ↔ key 互转
     // ================================================================
-    retreat: function (creep) {
-        var homeRoom = creep.memory.homeRoom;
-
-        // 已经到家了 — 转换逻辑由 main.js 处理
-        if (creep.room.name === homeRoom) {
-            return;
+    _dirConstToKey: function (dirConst) {
+        for (var i = 0; i < CARDINAL_DIRS.length; i++) {
+            if (CARDINAL_DIRS[i].const === dirConst) return CARDINAL_DIRS[i];
         }
-
-        // 往老家方向走
-        this.moveToRoom(creep, homeRoom);
+        return null;
     },
 
     // ================================================================
-    //  移动到目标房间（统一入口）
+    //  移动到目标房间
     // ================================================================
-    moveToRoom: function (creep, targetRoom) {
+    _moveToward: function (creep, targetRoom) {
         var err = creep.moveTo(new RoomPosition(25, 25, targetRoom), {
             visualizePathStyle: { stroke: '#ff88ff' },
             reusePath: 50,
-            maxRooms: 15
+            maxRooms: 30
         });
-
-        if (err !== OK && err !== ERR_TIRED) {
-            console.log('⚠️ [观察者] ' + creep.name + ' 移动失败(' + err + ') 目标=' + targetRoom + '，换目标');
-            creep.memory.targetRoom = null;
+        // ERR_BUSY(-4) 是刚孵化还没出笼，ERR_TIRED 是冷却，都静默忽略
+        if (err !== OK && err !== ERR_TIRED && err !== ERR_BUSY) {
+            console.log('⚠️ [观察者] ' + creep.name + ' 移动失败(' + err + ') 目标=' + targetRoom);
         }
     },
 
@@ -277,10 +289,16 @@ var roleObserver = {
     // ================================================================
     recordRoom: function (creep, roomName) {
         var room = Game.rooms[roomName];
-        if (!room) return;
+        if (!room) {
+            // 不在视野内也记录一下到过
+            if (!Memory.roomScout) Memory.roomScout = {};
+            if (!Memory.roomScout[roomName]) {
+                Memory.roomScout[roomName] = { name: roomName, timestamp: Game.time, owner: null };
+            }
+            return;
+        }
 
         if (!Memory.roomScout) Memory.roomScout = {};
-
         var prevInfo = Memory.roomScout[roomName];
 
         var info = {
@@ -290,37 +308,26 @@ var roleObserver = {
             controllerLevel: 0,
             hostiles: 0,
             hostilePlayers: [],
-            sources: 0,
+            sources: room.find(FIND_SOURCES).length,
             mineralType: null
         };
 
         if (room.controller) {
             info.controllerLevel = room.controller.level;
-            if (room.controller.owner) {
-                info.owner = room.controller.owner.username;
-            }
+            if (room.controller.owner) info.owner = room.controller.owner.username;
         }
 
         var hostiles = room.find(FIND_HOSTILE_CREEPS);
         info.hostiles = hostiles.length;
-
-        var hostileNames = [];
+        info.hostilePlayers = [];
         for (var i = 0; i < hostiles.length; i++) {
-            var ownerName = hostiles[i].owner.username;
-            if (hostileNames.indexOf(ownerName) === -1) {
-                hostileNames.push(ownerName);
-            }
+            var on = hostiles[i].owner.username;
+            if (info.hostilePlayers.indexOf(on) === -1) info.hostilePlayers.push(on);
         }
-        info.hostilePlayers = hostileNames;
-
-        info.sources = room.find(FIND_SOURCES).length;
 
         var minerals = room.find(FIND_MINERALS);
-        if (minerals.length > 0) {
-            info.mineralType = minerals[0].mineralType;
-        }
+        if (minerals.length > 0) info.mineralType = minerals[0].mineralType;
 
-        // 检测变化，有变化才打 log
         var changed = !prevInfo ||
             prevInfo.hostiles !== info.hostiles ||
             prevInfo.owner !== info.owner ||
