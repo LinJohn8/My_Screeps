@@ -53,7 +53,23 @@ var towerControl = {
             return;
         }
 
-        // 3. 修复建筑
+        // 3. 修复 Rampart / Wall（防御核心，受到攻击时优先修）
+        var rcl = room.controller ? room.controller.level : 1;
+        var wallMax = rcl * 10000;
+        var ramparts = room.find(FIND_STRUCTURES, {
+            filter: function (s) {
+                return (s.structureType === STRUCTURE_RAMPART ||
+                        s.structureType === STRUCTURE_WALL) &&
+                       s.hits < wallMax;
+            }
+        });
+        if (ramparts.length > 0 && tower.store[RESOURCE_ENERGY] > tower.store.getCapacity(RESOURCE_ENERGY) * 0.3) {
+            ramparts.sort(function (a, b) { return a.hits - b.hits; });
+            tower.repair(ramparts[0]);
+            return;
+        }
+
+        // 4. 修复其他建筑（排除墙/rampart）
         if (tower.store[RESOURCE_ENERGY] > tower.store.getCapacity(RESOURCE_ENERGY) * 0.6) {
             var damaged = room.find(FIND_STRUCTURES, {
                 filter: function (s) {
@@ -71,20 +87,19 @@ var towerControl = {
             }
         }
 
-        // 4. 修城墙/rampart
+        // 5. 能量充裕时继续加固城墙/rampart
         if (tower.store[RESOURCE_ENERGY] > tower.store.getCapacity(RESOURCE_ENERGY) * 0.8) {
-            var rcl = room.controller ? room.controller.level : 1;
-            var wallMax = rcl * 5000;
-            var wall = room.find(FIND_STRUCTURES, {
+            var wallMax2 = rcl * 20000;
+            var wall2 = room.find(FIND_STRUCTURES, {
                 filter: function (s) {
                     return (s.structureType === STRUCTURE_WALL ||
                             s.structureType === STRUCTURE_RAMPART) &&
-                           s.hits < wallMax;
+                           s.hits < wallMax2;
                 }
             });
-            if (wall.length > 0) {
-                wall.sort(function (a, b) { return a.hits - b.hits; });
-                tower.repair(wall[0]);
+            if (wall2.length > 0) {
+                wall2.sort(function (a, b) { return a.hits - b.hits; });
+                tower.repair(wall2[0]);
             }
         }
     }

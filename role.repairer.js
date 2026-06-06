@@ -84,12 +84,18 @@ var roleRepairer = {
                     if (ratio > 0.5) continue;
                     priority *= 1.0;
                     break;
-                case STRUCTURE_WALL:
                 case STRUCTURE_RAMPART:
-                    var maxHits = rcl * 10000;
-                    if (s.hits >= maxHits) continue;
-                    priority = 1 - (s.hits / maxHits);
-                    priority *= 2.0;
+                    // Rampart 是防御核心，提高修复优先级
+                    var rampartMax = rcl * 20000;
+                    if (s.hits >= rampartMax) continue;
+                    priority = 1 - (s.hits / rampartMax);
+                    priority *= 0.6;  // 比普通建筑更优先
+                    break;
+                case STRUCTURE_WALL:
+                    var wallMax = rcl * 10000;
+                    if (s.hits >= wallMax) continue;
+                    priority = 1 - (s.hits / wallMax);
+                    priority *= 1.5;
                     break;
                 default:
                     continue;

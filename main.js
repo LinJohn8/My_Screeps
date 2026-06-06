@@ -11,6 +11,8 @@ var roleScout     = require('role.scout');
 var roleObserver  = require('role.observer');
 var towerControl  = require('tower.control');
 var roadUtils     = require('utils.road');
+var roomStats     = require('utils.stats');
+var roomDefense   = require('utils.defense');
 
 module.exports.loop = function () {
 
@@ -27,18 +29,25 @@ module.exports.loop = function () {
         if (!room.controller || !room.controller.my) continue;
 
         try {
-            // --- 2a. Tower 防御 ---
+            // --- 2a. 统计更新（每 tick） ---
+            roomStats.update(room);
+
+            // --- 2b. Tower 防御 ---
             towerControl.run(room);
 
-            // --- 2b. 道路规划 ---
+            // --- 2c. 道路规划 + 防御工事 ---
             if (Game.time % 100 === 0) {
                 roadUtils.planRoads(room);
+                roomDefense.run(room);
             }
 
-            // --- 2c. 检测入侵者 & 防御响应 ---
+            // --- 2d. 检测入侵者 & 防御响应 ---
             checkHostiles(room);
 
-            // --- 2d. 探索相邻房间 ---
+            // --- 2e. 安全模式（极端威胁自动启动）---
+            checkSafeMode(room);
+
+            // --- 2f. 探索相邻房间 ---
             if (Game.time % 50 === 0) {
                 checkExploration(room);
             }
@@ -151,6 +160,38 @@ function checkHostiles(room) {
 
 
 // ================================================================
+//  🛡️ 安全模式（极端威胁底线防御）
+// ================================================================
+function checkSafeMode(room) {
+    if (!room.controller || !room.controller.my) return;
+    if (room.controller.safeMode <= 0) return;
+    if (room.controller.safeModeAvailable <= 0) return;
+
+    // 防抖：每 1000 tick 最多触发一次
+    if (room.memory.lastSafeMode && Game.time - room.memory.lastSafeMode < 1000) return;
+
+    // 威胁等级 > 15 且我方明显劣势时触发
+    var threat = room.memory.threatLevel || 0;
+    if (threat < 15) return;
+
+    var myCreeps = room.find(FIND_MY_CREEPS);
+    var soldiers = 0;
+    for (var i = 0; i < myCreeps.length; i++) {
+        if (myCreeps[i].memory.role === 'soldier') soldiers++;
+    }
+
+    // 有 soldier 且数量够多，不启动安全模式
+    if (soldiers >= Math.ceil(threat / 5)) return;
+
+    console.log('🛡️ [' + room.name + '] 威胁等级 ' + threat + '，启动安全模式!');
+    var result = room.controller.activateSafeMode();
+    if (result === OK) {
+        room.memory.lastSafeMode = Game.time;
+    }
+}
+
+
+// ================================================================
 //  🗺️ 探索管理
 // ================================================================
 function checkExploration(room) {
@@ -217,6 +258,22 @@ function manageSpawning(spawn) {
         targets.observer = 0;
     } else {
         targets.observer = Math.min(observerMax, Math.max(1, Math.floor(rcl / 2)));
+    }
+
+    // ========== 能量预算约束 ==========
+    var budgetLevel = roomStats.getBudgetLevel(room);
+    if (budgetLevel === 'red') {
+        // 红线 → 只孵士兵
+        targets.harvester = 0;
+        targets.upgrader = 0;
+        targets.builder = 0;
+        targets.repairer = 0;
+        targets.scout = 0;
+        targets.observer = 0;
+    } else if (budgetLevel === 'yellow') {
+        // 黄线 → 减少非关键角色
+        targets.builder = Math.min(targets.builder, 1);
+        targets.observer = Math.min(targets.observer, 2);
     }
 
     // ========== 优先级 ==========
@@ -296,6 +353,7 @@ function manageSpawning(spawn) {
 
     if (result === OK) {
         console.log('🛠 孵化 [' + selectedRole + '] ' + creepName + ' 能耗=' + cost);
+        roomStats.recordSpend(room, cost);
     } else if (result !== ERR_NOT_ENOUGH_ENERGY) {
         console.log('⚠ 孵化失败 [' + selectedRole + ']: ' + errStr(result));
     }
