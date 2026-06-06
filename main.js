@@ -105,9 +105,7 @@ module.exports.loop = function () {
         var hostilesHere = homeRoom.memory.hostile && homeRoom.find(FIND_HOSTILE_CREEPS).length > 0;
 
         var newRole = pickConversionRole(obsCreep, hostilesHere);
-        obsCreep.memory.role = newRole;
-        obsCreep.memory.working = (newRole === 'soldier');
-        console.log('🔄 [转换] ' + obsCreep.name + ' 观察者→' + newRole);
+        tryConvertOrSuicide(obsCreep, newRole);
     }
 
     // ========== 5b. 侦察兵卡住 → 回家转换 ==========
@@ -119,31 +117,58 @@ module.exports.loop = function () {
 
         var newRole = pickConversionRole(scCreep,
             scCreep.room.memory.hostile && scCreep.room.find(FIND_HOSTILE_CREEPS).length > 0);
-        scCreep.memory.role = newRole;
-        scCreep.memory.working = (newRole === 'soldier');
-        console.log('🔄 [转换] ' + scCreep.name + ' 侦察兵→' + newRole);
+        tryConvertOrSuicide(scCreep, newRole);
     }
 
-    // ========== 5c. 兜底: 在家停着不动的 scout/observer 全部转换 ==========
+    // ========== 5c. 兜底: 在家的 scout 和卡住的 observer 全部转换 ==========
     for (var idleName in Game.creeps) {
         var idleCreep = Game.creeps[idleName];
-        if (idleCreep.memory.role !== 'scout' && idleCreep.memory.role !== 'observer') continue;
         if (idleCreep.room.name !== idleCreep.memory.homeRoom) continue;
 
-        // observer: 跳过已经在新状态机里的
-        if (idleCreep.memory.role === 'observer') {
-            var validObsStates = ['exploring', 'returning', 'retreating', 'idle'];
-            if (validObsStates.indexOf(idleCreep.memory.state || '') !== -1) continue;
+        // —— scout: 在家一律转换 ——
+        if (idleCreep.memory.role === 'scout') {
+            var newRole = pickConversionRole(idleCreep,
+                idleCreep.room.memory.hostile && idleCreep.room.find(FIND_HOSTILE_CREEPS).length > 0);
+            tryConvertOrSuicide(idleCreep, newRole);
+            continue;
         }
-        // scout: 跳过已经有 convertAtHome 标记的（会在 5b 处理）
-        if (idleCreep.memory.role === 'scout' && idleCreep.memory.convertAtHome) continue;
 
-        // 走到这里说明是卡在旧状态的 → 强制转换
-        var newRole = pickConversionRole(idleCreep,
-            idleCreep.room.memory.hostile && idleCreep.room.find(FIND_HOSTILE_CREEPS).length > 0);
-        console.log('🔄 [强制转换] ' + idleCreep.name + ' ' + idleCreep.memory.role + '→' + newRole);
-        idleCreep.memory.role = newRole;
-        idleCreep.memory.working = (newRole === 'soldier');
+        // —— observer: 在家超过 3 tick 还没离开 → 卡住，转换 ——
+        if (idleCreep.memory.role === 'observer' && idleCreep.memory.state === 'exploring') {
+            if (!idleCreep.memory.homeTicks) idleCreep.memory.homeTicks = 0;
+            idleCreep.memory.homeTicks++;
+            if (idleCreep.memory.homeTicks > 3) {
+                var newRole = pickConversionRole(idleCreep,
+                    idleCreep.room.memory.hostile && idleCreep.room.find(FIND_HOSTILE_CREEPS).length > 0);
+                tryConvertOrSuicide(idleCreep, newRole);
+            }
+        }
+    }
+
+    // ========== 5d. 身体检查: 任何在家但身体不适合当前角色的 creeps 自杀 ==========
+    for (var checkName in Game.creeps) {
+        var checkCreep = Game.creeps[checkName];
+        if (checkCreep.room.name !== checkCreep.memory.homeRoom) continue;
+
+        var bodyTypes = {};
+        for (var bi = 0; bi < checkCreep.body.length; bi++) {
+            var bt = checkCreep.body[bi].type;
+            bodyTypes[bt] = (bodyTypes[bt] || 0) + 1;
+        }
+
+        var badBody = false;
+        switch (checkCreep.memory.role) {
+            case 'harvester': badBody = !bodyTypes[WORK] || !bodyTypes[CARRY]; break;
+            case 'builder':   badBody = !bodyTypes[WORK] || !bodyTypes[CARRY]; break;
+            case 'repairer':  badBody = !bodyTypes[WORK] || !bodyTypes[CARRY]; break;
+            case 'upgrader':  badBody = !bodyTypes[WORK]; break;
+            case 'soldier':   badBody = !bodyTypes[ATTACK] && !bodyTypes[RANGED_ATTACK]; break;
+        }
+
+        if (badBody) {
+            console.log('💀 [自杀] ' + checkCreep.name + ' ' + checkCreep.memory.role + ' 缺必要部件，自杀重建');
+            checkCreep.suicide();
+        }
     }
 
     // ========== 6. 战报摘要（每 20 tick 打印一次） ==========
@@ -246,6 +271,39 @@ function pickConversionRole(creep, hostilesHere) {
 
     // 默认变升级者
     return 'upgrader';
+}
+
+/**
+ * 检查 creep 身体是否有执行某角色所需的基础部件
+ * 没有的话转换了也白搭 → 直接自杀让 spawn 重新造
+ */
+function tryConvertOrSuicide(creep, newRole) {
+    // 检查身体部件
+    var hasPart = function (type) {
+        for (var i = 0; i < creep.body.length; i++) {
+            if (creep.body[i].type === type) return true;
+        }
+        return false;
+    };
+
+    var canDo = true;
+    switch (newRole) {
+        case 'harvester': canDo = hasPart(WORK) && hasPart(CARRY); break;
+        case 'builder':   canDo = hasPart(WORK) && hasPart(CARRY); break;
+        case 'repairer':  canDo = hasPart(WORK) && hasPart(CARRY); break;
+        case 'upgrader':  canDo = hasPart(WORK); break;
+        case 'soldier':   canDo = hasPart(ATTACK) || hasPart(RANGED_ATTACK); break;
+    }
+
+    if (canDo) {
+        creep.memory.role = newRole;
+        creep.memory.working = (newRole === 'soldier');
+        console.log('🔄 [转换] ' + creep.name + '→' + newRole);
+    } else {
+        // 身体不适合 → 自杀，孵化系统会造合适的
+        creep.suicide();
+        console.log('💀 [自杀] ' + creep.name + ' 身体(' + creep.body.map(function(b){return b.type;}).join(',') + ')不适合当' + newRole);
+    }
 }
 
 

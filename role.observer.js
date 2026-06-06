@@ -26,8 +26,8 @@ var roleObserver = {
 
     run: function (creep) {
 
-        // 调试日志（每 30 tick）
-        if (Game.time % 30 === 0) {
+        // 调试日志（每 5 tick）
+        if (Game.time % 5 === 0) {
             console.log('👁️ [观察者] ' + creep.name +
                 ' 状态=' + (creep.memory.state || '—') +
                 ' 方向=' + (creep.memory.direction || '—') +
@@ -78,7 +78,9 @@ var roleObserver = {
         creep.memory.state = 'exploring';
         creep.memory.path = [homeRoom];
         creep.memory.visitedDirs = [];
-        creep.memory.direction = null; // 选方向在 doExplore 里做
+        creep.memory.direction = null;
+        creep.memory.stuckTicks = 0;
+        creep.memory.lastExploreRoom = homeRoom;
     },
 
     // ================================================================
@@ -114,6 +116,25 @@ var roleObserver = {
     doExplore: function (creep) {
         var path = creep.memory.path;
         var currentRoom = creep.room.name;
+
+        // ---- 卡住检测: 30 tick 没换房间 → 放弃这个方向 ----
+        if (creep.memory.direction && creep.memory.lastExploreRoom) {
+            if (currentRoom === creep.memory.lastExploreRoom) {
+                creep.memory.stuckTicks = (creep.memory.stuckTicks || 0) + 1;
+                if (creep.memory.stuckTicks > 30) {
+                    var dirInfo = this._dirConstToKey(creep.memory.direction);
+                    console.log('👁️ [观察者] ' + creep.name + ' 方向 ' + (dirInfo ? dirInfo.key : creep.memory.direction) + ' 卡住，放弃');
+                    creep.memory.visitedDirs.push(dirInfo ? dirInfo.key : String(creep.memory.direction));
+                    creep.memory.direction = null;
+                    creep.memory.state = 'returning';
+                    creep.memory.stuckTicks = 0;
+                    return;
+                }
+            } else {
+                creep.memory.stuckTicks = 0;
+            }
+        }
+        creep.memory.lastExploreRoom = currentRoom;
 
         // ---- 还没选方向 → 从老家选一个 ----
         if (!creep.memory.direction) {
