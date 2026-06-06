@@ -19,6 +19,15 @@ var roleObserver = {
 
     run: function (creep) {
 
+        // 调试日志（每 20 tick 打印一次状态）
+        if (Game.time % 20 === 0) {
+            console.log('👁️ [观察者] ' + creep.name +
+                ' 状态=' + (creep.memory.state || 'observing') +
+                ' 目标=' + (creep.memory.targetRoom || '❌无') +
+                ' 当前=' + creep.room.name +
+                ' 老家=' + creep.memory.homeRoom);
+        }
+
         // 1. 撤退条件检测（非撤退状态才检测）
         if (creep.memory.state !== 'retreating') {
             this.checkRetreat(creep);
@@ -72,6 +81,11 @@ var roleObserver = {
         // 自动设置目标房间
         if (!creep.memory.targetRoom) {
             creep.memory.targetRoom = this.pickTarget(creep);
+            if (creep.memory.targetRoom) {
+                console.log('👁️ [观察者] ' + creep.name + ' 选定目标: ' + creep.memory.targetRoom);
+            } else {
+                console.log('⚠️ [观察者] ' + creep.name + ' 没有可观察的房间');
+            }
         }
 
         var target = creep.memory.targetRoom;
@@ -104,9 +118,16 @@ var roleObserver = {
     pickTarget: function (creep) {
         var homeRoom = creep.memory.homeRoom;
         var exits = Game.map.describeExits(homeRoom);
+
+        // 安全兜底: 没有出口信息
+        if (!exits) {
+            console.log('⚠️ [观察者] ' + creep.name + ' 无法获取 ' + homeRoom + ' 的出口信息');
+            return null;
+        }
+
         var observed = Memory.roomScout || {};
 
-        // ---- 策略 1: 选已有观察者数量最少的相邻房间 ----
+        // ---- 统计各房间已有观察者数量 ----
         var observerCounts = {};
         for (var name in Game.creeps) {
             var c = Game.creeps[name];
@@ -117,20 +138,23 @@ var roleObserver = {
 
         var bestRoom = null;
         var bestScore = 99999;
+        var firstExit = null;   // 最终兜底
 
         for (var dir in exits) {
             var neighbor = exits[dir];
+            if (!firstExit) firstExit = neighbor;
+
             var count = observerCounts[neighbor] || 0;
 
-            // 优先选还没人去的房间
+            // 优先级: 无人 + 未探索 → 直接返回
             if (count === 0) {
-                // 再优先选没探索过的
                 if (!Memory.explored || !Memory.explored[neighbor]) {
-                    return neighbor; // 最高优先级
+                    console.log('👁️ [观察者] 选目标: ' + neighbor + ' (未探索,无人)');
+                    return neighbor;
                 }
             }
 
-            // 计算分数: 观察者数量越少越好，已探索的稍差
+            // 评分: 观察者越少越好，已探索稍微扣分
             var score = count * 10 + (observed[neighbor] ? 1 : 0);
             if (score < bestScore) {
                 bestScore = score;
@@ -138,14 +162,13 @@ var roleObserver = {
             }
         }
 
-        // ---- 策略 2: 所有相邻房间都有观察者 → 扩散到更远 ----
-        if (bestRoom === null || bestScore >= 10) {
-            // 从已探索的房间里去找他们的相邻房间
+        // ---- 相邻房间都有人/都已探索 → 扩散到二级相邻 ----
+        if (bestScore >= 10) {
             for (var dir2 in exits) {
                 var nb = exits[dir2];
                 if (!observed[nb]) continue;
+
                 if (!observed[nb].exits) {
-                    // 利用 Game.map 获取二级相邻
                     var nbExits = Game.map.describeExits(nb);
                     if (nbExits) {
                         observed[nb].exits = nbExits;
@@ -155,15 +178,22 @@ var roleObserver = {
                     for (var d2 in observed[nb].exits) {
                         var farRoom = observed[nb].exits[d2];
                         if (!observerCounts[farRoom] || observerCounts[farRoom] === 0) {
-                            return farRoom; // 远一点但没人观察的房间
+                            console.log('👁️ [观察者] 选目标(二级): ' + farRoom);
+                            return farRoom;
                         }
                     }
                 }
             }
-            // 还是没找到，就选分数最低的相邻房间
-            if (bestRoom) return bestRoom;
         }
 
+        // ---- 最终兜底: 第一个出口 ----
+        if (!bestRoom) {
+            bestRoom = firstExit;
+        }
+
+        if (bestRoom) {
+            console.log('👁️ [观察者] 选目标(兜底): ' + bestRoom + ' 评分=' + bestScore);
+        }
         return bestRoom;
     },
 
@@ -171,8 +201,8 @@ var roleObserver = {
     //  在目标房间巡逻（最小动作维持视野）
     // ================================================================
     patrol: function (creep, roomName) {
-        // 每 8 tick 随机走一步，覆盖更多视野
-        if (Game.time % 8 === 0) {
+        // 每 5 tick 走一步，覆盖更多视野
+        if (Game.time % 5 === 0) {
             // 检测当前房间是否有敌人
             var room = Game.rooms[roomName];
             if (room) {
@@ -189,26 +219,20 @@ var roleObserver = {
             // 沿边界小范围移动观察
             var x = creep.pos.x;
             var y = creep.pos.y;
-            var dx = 0, dy = 0;
 
             // 靠边时往中间走
-            if (x < 3) dx = 1;
-            else if (x > 46) dx = -1;
-            if (y < 3) dy = 1;
-            else if (y > 46) dy = -1;
-
-            if (dx === 0 && dy === 0) {
-                // 随机走一步，覆盖更多视野
+            if (x < 5) {
+                creep.move(RIGHT);
+            } else if (x > 44) {
+                creep.move(LEFT);
+            } else if (y < 5) {
+                creep.move(BOTTOM);
+            } else if (y > 44) {
+                creep.move(TOP);
+            } else {
+                // 不在边界 → 随机走一步
                 var dirs = [TOP, TOP_RIGHT, RIGHT, BOTTOM_RIGHT, BOTTOM, BOTTOM_LEFT, LEFT, TOP_LEFT];
                 creep.move(dirs[Math.floor(Math.random() * dirs.length)]);
-            } else {
-                // 靠边时往中间走
-                var dirMap = {
-                    '-1,-1': TOP_LEFT,   '0,-1': TOP,      '1,-1': TOP_RIGHT,
-                    '-1,0':  LEFT,                              '1,0': RIGHT,
-                    '-1,1':  BOTTOM_LEFT, '0,1': BOTTOM,  '1,1': BOTTOM_RIGHT
-                };
-                creep.move(dirMap[dx + ',' + dy]);
             }
         }
     },
@@ -238,8 +262,8 @@ var roleObserver = {
             maxRooms: 15
         });
 
-        if (err === ERR_NO_PATH) {
-            console.log('⚠️ [观察者] ' + creep.name + ' 无法到达 ' + targetRoom + '，换目标');
+        if (err !== OK && err !== ERR_TIRED) {
+            console.log('⚠️ [观察者] ' + creep.name + ' 移动失败(' + err + ') 目标=' + targetRoom + '，换目标');
             creep.memory.targetRoom = null;
         }
     },
