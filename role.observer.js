@@ -78,22 +78,24 @@ var roleObserver = {
     observe: function (creep) {
         var homeRoom = creep.memory.homeRoom;
 
-        // 自动设置目标房间
-        if (!creep.memory.targetRoom) {
+        // 自动设置目标房间（带重试冷却，不每 tick 重复）
+        if (!creep.memory.targetRoom && (!creep.memory.noTargetUntil || Game.time >= creep.memory.noTargetUntil)) {
             creep.memory.targetRoom = this.pickTarget(creep);
             if (creep.memory.targetRoom) {
+                creep.memory.noTargetUntil = undefined;
                 console.log('👁️ [观察者] ' + creep.name + ' 选定目标: ' + creep.memory.targetRoom);
             } else {
-                console.log('⚠️ [观察者] ' + creep.name + ' 没有可观察的房间');
+                // 找不到目标 → 50 tick 后再试
+                creep.memory.noTargetUntil = Game.time + 50;
+                if (Game.time % 50 === 0) {
+                    console.log('⚠️ [观察者] ' + creep.name + ' 没有可观察的房间');
+                }
             }
         }
 
         var target = creep.memory.targetRoom;
         if (!target) {
-            // 没有可观察的房间 → 在 homeRoom 待命
-            if (creep.room.name !== homeRoom) {
-                this.moveToRoom(creep, homeRoom);
-            }
+            // 没有可观察的房间 → 在 homeRoom 待命（静默）
             return;
         }
 
@@ -119,9 +121,11 @@ var roleObserver = {
         var homeRoom = creep.memory.homeRoom;
         var exits = Game.map.describeExits(homeRoom);
 
-        // 安全兜底: 没有出口信息
+        // 安全兜底: 没有出口信息（比如 sim 教学房间）
         if (!exits) {
-            console.log('⚠️ [观察者] ' + creep.name + ' 无法获取 ' + homeRoom + ' 的出口信息');
+            if (Game.time % 50 === 0) {
+                console.log('⚠️ [观察者] ' + creep.name + ' 房间 ' + homeRoom + ' 没有出口，无法探索');
+            }
             return null;
         }
 
