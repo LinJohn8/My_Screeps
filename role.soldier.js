@@ -17,6 +17,7 @@ var roleSoldier = {
         if (hostiles.length > 0) {
             var target = creep.pos.findClosestByPath(hostiles);
             if (target) {
+                creep.memory.status = '攻击';
                 this.attackTarget(creep, target);
                 return;
             }
@@ -32,6 +33,7 @@ var roleSoldier = {
                 ? creep.pos.findClosestByPath(priority)
                 : creep.pos.findClosestByPath(enemyStructures);
             if (target) {
+                creep.memory.status = '拆建筑';
                 this.attackTarget(creep, target);
                 return;
             }
@@ -39,6 +41,7 @@ var roleSoldier = {
 
         // 3. 在家没敌人 → Spawn 附近待命
         if (room.name === homeRoom) {
+            creep.memory.status = '待命';
             var spawn = room.find(FIND_MY_SPAWNS)[0];
             if (spawn) {
                 var dist = creep.pos.getRangeTo(spawn);
@@ -47,6 +50,7 @@ var roleSoldier = {
                 }
             }
         } else {
+            creep.memory.status = '回家';
             // 不在家，回家
             var homeSpawn = Game.spawns[Object.keys(Game.spawns)[0]];
             if (homeSpawn) {

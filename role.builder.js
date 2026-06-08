@@ -32,8 +32,10 @@ var roleBuilder = {
         if (sites.length > 0) {
             var target = creep.pos.findClosestByPath(sites);
             if (target) {
+                creep.memory.status = '建造';
                 var err = creep.build(target);
                 if (err === ERR_NOT_IN_RANGE) {
+                    creep.memory.status = '前往工地';
                     creep.moveTo(target, { visualizePathStyle: { stroke: '#0000ff' }, reusePath: 20 });
                 } else if (err === ERR_INVALID_TARGET) {
                     creep.memory.working = false;
@@ -51,17 +53,41 @@ var roleBuilder = {
             }
         });
         if (damaged.length > 0) {
+            creep.memory.status = '维修';
             damaged.sort(function (a, b) {
                 return (a.hits / a.hitsMax) - (b.hits / b.hitsMax);
             });
             var err = creep.repair(damaged[0]);
             if (err === ERR_NOT_IN_RANGE) {
+                creep.memory.status = '前往维修';
                 creep.moveTo(damaged[0], { visualizePathStyle: { stroke: '#00ffff' } });
             }
             return;
         }
 
-        // 3. 升级
+        // 3. 拆墙（堵在关键路线上的墙）
+        var roomDefense = require('utils.defense');
+        var blockingWalls = roomDefense.findWallsOnCriticalPaths(creep.room);
+        if (blockingWalls.length > 0) {
+            var targetWall = creep.pos.findClosestByPath(blockingWalls);
+            if (targetWall) {
+                creep.memory.status = '拆墙';
+                if (targetWall.structureType) {
+                    // 已建成的墙 → dismantle
+                    var err = creep.dismantle(targetWall);
+                    if (err === ERR_NOT_IN_RANGE) {
+                        creep.moveTo(targetWall, { visualizePathStyle: { stroke: '#ff0000' } });
+                    }
+                } else {
+                    // 墙的工地 → remove
+                    targetWall.remove();
+                }
+                return;
+            }
+        }
+
+        // 4. 升级
+        creep.memory.status = '溢出升级';
         if (creep.room.controller && creep.room.controller.my) {
             if (creep.upgradeController(creep.room.controller) === ERR_NOT_IN_RANGE) {
                 creep.moveTo(creep.room.controller, { visualizePathStyle: { stroke: '#00ff00' } });

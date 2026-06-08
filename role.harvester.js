@@ -40,6 +40,7 @@ var roleHarvester = {
     },
 
     deliverEnergy: function (creep) {
+        creep.memory.status = '送能';
         var target = creep.pos.findClosestByPath(FIND_STRUCTURES, {
             filter: function (s) {
                 return (s.structureType === STRUCTURE_SPAWN ||
@@ -62,6 +63,7 @@ var roleHarvester = {
         }
 
         // 没有建筑需要能量 → 去升级控制器（不闲着）
+        creep.memory.status = '溢出升级';
         if (creep.room.controller && creep.room.controller.my) {
             if (creep.upgradeController(creep.room.controller) === ERR_NOT_IN_RANGE) {
                 creep.moveTo(creep.room.controller, { visualizePathStyle: { stroke: '#aaaaaa' } });
@@ -78,15 +80,18 @@ var roleHarvester = {
         if (creep.memory.sourceId) {
             var currentSource = Game.getObjectById(creep.memory.sourceId);
             if (currentSource && currentSource.energy > 0) {
+                creep.memory.status = '采集';
                 this._harvestSource(creep, currentSource);
                 return;
             }
             // 源空了 → 等 3 tick 再评估（源马上刷新，避免空跑）
             if (!creep.memory.switchCooldown) {
+                creep.memory.status = '等待刷新';
                 creep.memory.switchCooldown = Game.time + 3;
                 return;
             }
             if (Game.time < creep.memory.switchCooldown) {
+                creep.memory.status = '等待刷新';
                 return;
             }
             // 冷却到了 → 清除旧承诺，重新选源
@@ -96,6 +101,7 @@ var roleHarvester = {
         // ---- 重新选源 ----
         var bestSource = this._pickBestSource(creep);
         if (!bestSource) {
+            creep.memory.status = '等待刷新';
             // 所有源都没能量 → 去最近的那个旁边等
             var nearest = creep.pos.findClosestByPath(FIND_SOURCES);
             if (nearest && creep.pos.getRangeTo(nearest) > 1) {
@@ -198,7 +204,10 @@ var roleHarvester = {
     _harvestSource: function (creep, source) {
         var err = creep.harvest(source);
         if (err === ERR_NOT_IN_RANGE) {
+            creep.memory.status = '前往源';
             creep.moveTo(source, { visualizePathStyle: { stroke: '#ffaa00' }, reusePath: 20 });
+        } else if (err === OK) {
+            creep.memory.status = '采集';
         }
     }
 };

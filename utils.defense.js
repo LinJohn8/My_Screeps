@@ -99,17 +99,89 @@ var defense = {
     //  Spawn 为中心，向外半径 6 格的矩形环上放 Wall
     //  注意留出出口方向不封死
     // ================================================================
+    // ================================================================
+    //  获取关键路径上的格子集合（Spawn → 所有Source/Controller/出口）
+    // ================================================================
+    _getCriticalPathTiles: function (room) {
+        var spawns = room.find(FIND_MY_SPAWNS);
+        if (spawns.length === 0) return {};
+
+        var spawnPos = spawns[0].pos;
+        var criticalTiles = {};
+
+        // 到每个能量源的路径
+        var sources = room.find(FIND_SOURCES);
+        for (var i = 0; i < sources.length; i++) {
+            var path = PathFinder.search(spawnPos, { pos: sources[i].pos, range: 1 }, { maxOps: 500 }).path;
+            for (var pi = 0; pi < path.length; pi++) {
+                criticalTiles[path[pi].x + ',' + path[pi].y] = true;
+            }
+        }
+
+        // 到控制器的路径
+        if (room.controller) {
+            var cPath = PathFinder.search(spawnPos, { pos: room.controller.pos, range: 1 }, { maxOps: 500 }).path;
+            for (var pi2 = 0; pi2 < cPath.length; pi2++) {
+                criticalTiles[cPath[pi2].x + ',' + cPath[pi2].y] = true;
+            }
+        }
+
+        // 到每个出口的路径
+        var roadUtils = require('utils.road');
+        var exits = roadUtils.getExitPositions(room);
+        for (var ei = 0; ei < exits.length; ei++) {
+            var ePath = PathFinder.search(spawnPos, { pos: exits[ei].center, range: 1 }, { maxOps: 500 }).path;
+            for (var pi3 = 0; pi3 < ePath.length; pi3++) {
+                criticalTiles[ePath[pi3].x + ',' + ePath[pi3].y] = true;
+            }
+        }
+
+        return criticalTiles;
+    },
+
+    /**
+     * 查找建在关键路径上的墙（堵路的墙）
+     */
+    findWallsOnCriticalPaths: function (room) {
+        var criticalTiles = this._getCriticalPathTiles(room);
+        var blockingWalls = [];
+
+        var walls = room.find(FIND_MY_STRUCTURES, {
+            filter: function (s) { return s.structureType === STRUCTURE_WALL; }
+        });
+        for (var i = 0; i < walls.length; i++) {
+            var w = walls[i];
+            if (criticalTiles[w.pos.x + ',' + w.pos.y]) {
+                blockingWalls.push(w);
+            }
+        }
+
+        // 也检查墙的工地
+        var wallSites = room.find(FIND_CONSTRUCTION_SITES, {
+            filter: function (s) { return s.structureType === STRUCTURE_WALL; }
+        });
+        for (var si = 0; si < wallSites.length; si++) {
+            var ws = wallSites[si];
+            if (criticalTiles[ws.pos.x + ',' + ws.pos.y]) {
+                blockingWalls.push(ws);
+            }
+        }
+
+        return blockingWalls;
+    },
+
     planPerimeter: function (room) {
         var spawns = room.find(FIND_MY_SPAWNS);
         if (spawns.length === 0) return;
 
         var cx = spawns[0].pos.x;
         var cy = spawns[0].pos.y;
+        // 预先计算关键路径，不在这些格子上建墙
+        var criticalTiles = this._getCriticalPathTiles(room);
         var radius = 6;
         var placed = 0;
 
-        // 在矩形环上建墙（简化实现：只建四个角 + 关键路径）
-        // 更精确的做法是算一个圆环
+        // 在矩形环上建墙
         for (var dx = -radius; dx <= radius; dx++) {
             for (var dy = -radius; dy <= radius; dy++) {
                 // 只选环上的点（离中心距离在 radius-1 ~ radius 之间）
@@ -150,6 +222,11 @@ var defense = {
                             blocked = true;
                             break;
                         }
+                        // 有道路 → 不能盖墙（否则会堵路）
+                        if (t === STRUCTURE_ROAD) {
+                            blocked = true;
+                            break;
+                        }
                     }
                     if (l.type === 'constructionSite') {
                         blocked = true;
@@ -157,6 +234,9 @@ var defense = {
                     }
                 }
                 if (blocked) continue;
+
+                // 不在关键路径上建墙（否则会堵路）
+                if (criticalTiles[wx + ',' + wy]) continue;
 
                 var result = room.createConstructionSite(wx, wy, STRUCTURE_WALL);
                 if (result === OK) placed++;
@@ -266,6 +346,83 @@ var defense = {
         }
         return true;
     }
+};
+
+// ================================================================
+//  🚧 路障检测: 清除盖在路上的墙
+// ================================================================
+
+/**
+ * 检查某格是否有路（已建成或正在建）
+ */
+defense._hasRoadAt = function (room, x, y) {
+    if (x < 0 || x > 49 || y < 0 || y > 49) return false;
+
+    var structures = room.lookForAt(LOOK_STRUCTURES, x, y);
+    for (var i = 0; i < structures.length; i++) {
+        if (structures[i].structureType === STRUCTURE_ROAD) return true;
+    }
+    var sites = room.lookForAt(LOOK_CONSTRUCTION_SITES, x, y);
+    for (var i = 0; i < sites.length; i++) {
+        if (sites[i].structureType === STRUCTURE_ROAD) return true;
+    }
+    return false;
+};
+
+/**
+ * 清除建在路上的 Wall 工地
+ */
+defense.removeBlockedRoadSites = function (room) {
+    var wallSites = room.find(FIND_CONSTRUCTION_SITES, {
+        filter: function (s) { return s.structureType === STRUCTURE_WALL; }
+    });
+    var removed = 0;
+    for (var i = 0; i < wallSites.length; i++) {
+        var site = wallSites[i];
+        if (this._hasRoadAt(room, site.pos.x, site.pos.y)) {
+            site.remove();
+            removed++;
+        }
+    }
+    if (removed > 0) {
+        console.log('🏰 [' + room.name + '] 清除了 ' + removed + ' 个堵路的墙工地');
+    }
+    return removed;
+};
+
+/**
+ * 检测已建成的墙是否堵路（返回堵路的墙列表）
+ * 条件: 墙的上下或左右两侧都有路 → 必然堵路
+ */
+defense.findBlockedRoadWalls = function (room) {
+    var walls = room.find(FIND_MY_STRUCTURES, {
+        filter: function (s) { return s.structureType === STRUCTURE_WALL; }
+    });
+
+    var blocked = [];
+    for (var i = 0; i < walls.length; i++) {
+        var w = walls[i];
+        var x = w.pos.x, y = w.pos.y;
+
+        var up    = this._hasRoadAt(room, x, y - 1);
+        var down  = this._hasRoadAt(room, x, y + 1);
+        var left  = this._hasRoadAt(room, x - 1, y);
+        var right = this._hasRoadAt(room, x + 1, y);
+
+        // 上下都有路 或 左右都有路 → 必然堵路
+        if ((up && down) || (left && right)) {
+            blocked.push(w);
+        }
+    }
+
+    if (blocked.length > 0 && Game.time % 100 === 0) {
+        console.log('🏰 [' + room.name + '] 发现 ' + blocked.length + ' 处墙堵路，需要手动拆除');
+        for (var bi = 0; bi < blocked.length; bi++) {
+            console.log('   🧱 ' + blocked[bi].pos.x + ',' + blocked[bi].pos.y);
+        }
+    }
+
+    return blocked;
 };
 
 module.exports = defense;

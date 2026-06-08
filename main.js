@@ -9,6 +9,7 @@ var roleRepairer  = require('role.repairer');
 var roleSoldier   = require('role.soldier');
 var roleScout     = require('role.scout');
 var roleObserver  = require('role.observer');
+var roleRemoteMiner = require('role.remoteMiner');
 var towerControl  = require('tower.control');
 var roadUtils     = require('utils.road');
 var roomStats     = require('utils.stats');
@@ -35,10 +36,22 @@ module.exports.loop = function () {
             // --- 2b. Tower 防御 ---
             towerControl.run(room);
 
-            // --- 2c. 道路规划 + 防御工事 ---
+            // --- 2c. 道路规划 + 防御工事 + 路障清理 ---
             if (Game.time % 100 === 0) {
                 roadUtils.planRoads(room);
+
+                // 先清理堵路的墙工地，再建新墙
+                var blockingWalls = roomDefense.findWallsOnCriticalPaths(room);
+                for (var bwi = 0; bwi < blockingWalls.length; bwi++) {
+                    if (!blockingWalls[bwi].structureType) {
+                        // 是工地 → 直接移除
+                        blockingWalls[bwi].remove();
+                    }
+                }
+
                 roomDefense.run(room);
+                roomDefense.removeBlockedRoadSites(room);
+                roomDefense.findBlockedRoadWalls(room);
             }
 
             // --- 2d. 检测入侵者 & 防御响应 ---
@@ -80,7 +93,8 @@ module.exports.loop = function () {
                 case 'repairer':  roleRepairer.run(creep);  break;
                 case 'soldier':   roleSoldier.run(creep);   break;
                 case 'scout':     roleScout.run(creep);     break;
-                case 'observer':  roleObserver.run(creep);  break;
+                case 'observer':     roleObserver.run(creep);     break;
+                case 'remoteMiner':  roleRemoteMiner.run(creep); break;
                 default:
                     creep.memory.role = 'upgrader';
                     creep.memory.working = false;
@@ -171,16 +185,43 @@ module.exports.loop = function () {
         }
     }
 
-    // ========== 6. 战报摘要（每 20 tick 打印一次） ==========
-    if (Game.time % 20 === 0) {
-        var roles = {};
-        for (var n in Game.creeps) {
-            var r = Game.creeps[n].memory.role;
-            roles[r] = (roles[r] || 0) + 1;
+    // ========== 6. 状态摘要（每 30 tick 打印一次） ==========
+    if (Game.time % 30 === 0) {
+        // 逐房间打印
+        for (var rmName in Game.rooms) {
+            var rm = Game.rooms[rmName];
+            if (!rm.controller || !rm.controller.my) continue;
+
+            // 第一行: 汇总
+            var roles = {};
+            var roomCreeps = [];
+            for (var n in Game.creeps) {
+                if (Game.creeps[n].room.name !== rmName) continue;
+                var r = Game.creeps[n].memory.role;
+                roles[r] = (roles[r] || 0) + 1;
+                roomCreeps.push(Game.creeps[n]);
+            }
+
+            var line = '📊 [' + rmName + '] ';
+            for (var k in roles) line += k + ':' + roles[k] + ' ';
+
+            var st = rm.memory.stats;
+            if (st) {
+                var pct = Math.floor((st.energyStored / (st.energyCapacity || 1)) * 100);
+                line += '⚡' + pct + '%';
+                if (st.constructionSites > 0) line += ' 🏗️' + st.constructionSites;
+            }
+            if (rm.memory.hostile) line += ' ⚔️!';
+            console.log(line);
+
+            // 第二行起: 每个 creep 在干嘛
+            for (var ci = 0; ci < roomCreeps.length; ci++) {
+                var c = roomCreeps[ci];
+                var status = c.memory.status || (c.memory.working ? '工作中' : '准备中');
+                var pos = c.pos.x + ',' + c.pos.y;
+                console.log('   ' + c.name.slice(-12) + ' [' + c.memory.role + '] ' + status + ' @' + pos);
+            }
         }
-        var info = '📊 ';
-        for (var k in roles) info += k + ':' + roles[k] + ' ';
-        console.log(info);
     }
 };
 
@@ -348,6 +389,7 @@ function manageSpawning(spawn) {
     counts.soldier   = counts.soldier   || 0;
     counts.scout     = counts.scout     || 0;
     counts.observer  = counts.observer  || 0;
+    counts.remoteMiner = counts.remoteMiner || 0;
 
     // ========== 目标数量 ==========
     var targets = {};
@@ -365,17 +407,8 @@ function manageSpawning(spawn) {
         targets.soldier = 0;
     }
 
-    targets.scout = 0;  // 已废弃 — observer 替代了 scout 的功能
-
-    // 观察者: 1-4 个，负责远行侦察
-    // 注意: 观察者撤退回家后会被转换成其他兵种，所以需要持续补充
-    var observerMax = 4;
-    // 有入侵时不孵观察者，省能量给士兵
-    if (room.memory.hostile) {
-        targets.observer = 0;
-    } else {
-        targets.observer = Math.min(observerMax, Math.max(1, Math.floor(rcl / 2)));
-    }
+    targets.scout = 0;  // 已废弃
+    targets.observer = 0; // 已废弃（当前房间出口不通）
 
     // ========== 能量预算约束 ==========
     var budgetLevel = roomStats.getBudgetLevel(room);
@@ -387,14 +420,33 @@ function manageSpawning(spawn) {
         targets.repairer = 0;
         targets.scout = 0;
         targets.observer = 0;
+        targets.remoteMiner = 0;
     } else if (budgetLevel === 'yellow') {
         // 黄线 → 减少非关键角色
         targets.builder = Math.min(targets.builder, 1);
-        targets.observer = Math.min(targets.observer, 2);
+    }
+
+    // ========== 远程采集（本地能量不足时） ==========
+    var budgetRatio = 0;
+    var stats = room.memory.stats;
+    if (stats && stats.energyCapacity > 0) {
+        budgetRatio = stats.energyStored / stats.energyCapacity;
+    }
+    if (budgetRatio < 0.4 && counts.remoteMiner < 2 && targets.harvester > 0) {
+        // 能量不足 → 找最近的资源房间派远程矿工
+        var remoteRoom = pickRemoteRoom(room);
+        if (remoteRoom) {
+            room.memory.remoteTarget = remoteRoom;
+            targets.remoteMiner = 1;
+        } else {
+            targets.remoteMiner = 0;
+        }
+    } else {
+        targets.remoteMiner = 0;
     }
 
     // ========== 优先级 ==========
-    var priorityOrder = ['soldier', 'harvester', 'builder', 'repairer', 'upgrader', 'observer'];
+    var priorityOrder = ['soldier', 'harvester', 'remoteMiner', 'builder', 'repairer', 'upgrader'];
 
     var selectedRole = null;
     for (var pi = 0; pi < priorityOrder.length; pi++) {
@@ -454,8 +506,12 @@ function manageSpawning(spawn) {
 
     // 如果是观察者，设置初始内存（不设 state，让 role.observer 的 _init 来处理）
     if (selectedRole === 'observer') {
-        // state 留空 → _init 会自动设为 'exploring' 或 'idle'
         creepMemory.lastHits = undefined;
+    }
+
+    // 如果是远程矿工，设置目标房间
+    if (selectedRole === 'remoteMiner') {
+        creepMemory.targetRoom = room.memory.remoteTarget;
     }
 
     var result = spawn.spawnCreep(body, creepName, {
@@ -472,6 +528,37 @@ function manageSpawning(spawn) {
 
 
 // ================================================================
+//  🗺️ 远程房间选择
+// ================================================================
+function pickRemoteRoom(room) {
+    var roomScout = Memory.roomScout || {};
+    var homeRoom = room.name;
+    var bestRoom = null;
+    var bestDist = 99;
+
+    for (var name in roomScout) {
+        var info = roomScout[name];
+        // 必须有能量源、没主人（中立房间）、没敌人
+        if (!info.sources || info.sources < 1) continue;
+        if (info.owner) continue;  // 有主人的房间不去（避免冲突）
+        if (info.hostiles && info.hostiles > 0) continue;
+
+        // 计算距离
+        var route = Game.map.findRoute(homeRoom, name);
+        if (route === ERR_NO_PATH) continue;
+        var dist = route.length;
+
+        if (dist < bestDist) {
+            bestDist = dist;
+            bestRoom = name;
+        }
+    }
+
+    return bestRoom;
+}
+
+
+// ================================================================
 //  🧬 身体部件配置
 // ================================================================
 
@@ -483,8 +570,9 @@ function getMinBody(role) {
         case 'repairer':  return [WORK, CARRY, MOVE];
         case 'soldier':   return [ATTACK, MOVE, MOVE];
         case 'scout':     return [MOVE];
-        case 'observer':  return [MOVE, MOVE, MOVE];
-        default:          return [WORK, CARRY, MOVE];
+        case 'observer':     return [MOVE, MOVE, MOVE];
+        case 'remoteMiner':  return [WORK, CARRY, MOVE, MOVE];
+        default:             return [WORK, CARRY, MOVE];
     }
 }
 
@@ -513,6 +601,9 @@ function getBodyForRole(role, room) {
             break;
         case 'observer':
             while (extra >= 50 && base.length < 25) { base.push(MOVE); extra -= 50; }
+            break;
+        case 'remoteMiner':
+            while (extra >= 150 && base.length < 25) { base.push(WORK, CARRY, MOVE, MOVE); extra -= 150; }
             break;
     }
     return base;

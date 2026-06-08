@@ -30,8 +30,10 @@ var roleRepairer = {
     repairStuff: function (creep) {
         var target = this.findTarget(creep);
         if (target) {
+            creep.memory.status = '维修';
             var err = creep.repair(target);
             if (err === ERR_NOT_IN_RANGE) {
+                creep.memory.status = '前往维修';
                 creep.moveTo(target, { visualizePathStyle: { stroke: '#ffff00' }, reusePath: 20 });
             } else if (err !== OK) {
                 creep.memory.repairTargetId = null;
@@ -40,6 +42,7 @@ var roleRepairer = {
         }
 
         // 没有要修的 → 去升级
+        creep.memory.status = '溢出升级';
         if (creep.room.controller && creep.room.controller.my) {
             if (creep.upgradeController(creep.room.controller) === ERR_NOT_IN_RANGE) {
                 creep.moveTo(creep.room.controller, { visualizePathStyle: { stroke: '#00ff00' } });

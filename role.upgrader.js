@@ -19,21 +19,26 @@ var roleUpgrader = {
         // 升级
         if (creep.memory.working) {
             if (!creep.room.controller || !creep.room.controller.my) {
+                creep.memory.status = '回家';
                 this.goHome(creep);
                 return;
             }
             var err = creep.upgradeController(creep.room.controller);
             if (err === ERR_NOT_IN_RANGE) {
+                creep.memory.status = '前往控制器';
                 creep.moveTo(creep.room.controller, {
                     visualizePathStyle: { stroke: '#00ff00' },
                     reusePath: 20,
                     range: 1
                 });
+            } else {
+                creep.memory.status = '升级';
             }
             return;
         }
 
         // 取能量
+        creep.memory.status = '取能';
         this.getEnergy(creep);
     },
 
@@ -44,7 +49,10 @@ var roleUpgrader = {
         });
         if (dropped) {
             if (creep.pickup(dropped) === ERR_NOT_IN_RANGE) {
+                creep.memory.status = '前往掉落的能量';
                 creep.moveTo(dropped, { visualizePathStyle: { stroke: '#ffaa00' } });
+            } else {
+                creep.memory.status = '捡能';
             }
             return;
         }
