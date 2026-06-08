@@ -5,6 +5,8 @@
  *   受损建筑 > 道路 > 城墙/Rampart（到阈值）
  * RCL 越高，城墙修得越多
  */
+var movement = require('../utils/movement');
+
 var roleRepairer = {
 
     run: function (creep) {
@@ -34,7 +36,12 @@ var roleRepairer = {
             var err = creep.repair(target);
             if (err === ERR_NOT_IN_RANGE) {
                 creep.memory.status = '前往维修';
-                creep.moveTo(target, { visualizePathStyle: { stroke: '#ffff00' }, reusePath: 20 });
+                movement.moveTo(creep, target, {
+                    visualizePathStyle: { stroke: '#ffff00' },
+                    reusePath: 20,
+                    range: 3,
+                    reason: 'repair'
+                });
             } else if (err !== OK) {
                 creep.memory.repairTargetId = null;
             }
@@ -45,7 +52,11 @@ var roleRepairer = {
         creep.memory.status = '溢出升级';
         if (creep.room.controller && creep.room.controller.my) {
             if (creep.upgradeController(creep.room.controller) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(creep.room.controller, { visualizePathStyle: { stroke: '#00ff00' } });
+                movement.moveTo(creep, creep.room.controller, {
+                    visualizePathStyle: { stroke: '#00ff00' },
+                    range: 3,
+                    reason: 'repairer-upgrade'
+                });
             }
         }
     },
@@ -117,17 +128,20 @@ var roleRepairer = {
     },
 
     getEnergy: function (creep) {
-        var dropped = creep.pos.findClosestByPath(FIND_DROPPED_RESOURCES, {
+        var dropped = movement.closestByPathOrRange(creep, FIND_DROPPED_RESOURCES, {
             filter: function (r) { return r.resourceType === RESOURCE_ENERGY && r.amount > 20; }
         });
         if (dropped) {
             if (creep.pickup(dropped) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(dropped, { visualizePathStyle: { stroke: '#ffaa00' } });
+                movement.moveTo(creep, dropped, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reason: 'repairer-pickup'
+                });
             }
             return;
         }
 
-        var container = creep.pos.findClosestByPath(FIND_STRUCTURES, {
+        var container = movement.closestByPathOrRange(creep, FIND_STRUCTURES, {
             filter: function (s) {
                 return (s.structureType === STRUCTURE_CONTAINER ||
                         s.structureType === STRUCTURE_STORAGE) &&
@@ -136,18 +150,30 @@ var roleRepairer = {
         });
         if (container) {
             if (creep.withdraw(container, RESOURCE_ENERGY) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(container, { visualizePathStyle: { stroke: '#ffaa00' } });
+                movement.moveTo(creep, container, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reason: 'repairer-withdraw'
+                });
             }
             return;
         }
 
-        var source = creep.pos.findClosestByPath(FIND_SOURCES_ACTIVE);
+        var source = movement.closestByPathOrRange(creep, FIND_SOURCES_ACTIVE);
         if (source) {
             if (creep.harvest(source) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(source, { visualizePathStyle: { stroke: '#ffaa00' } });
+                movement.moveTo(creep, source, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reason: 'repairer-harvest'
+                });
             }
         } else if (creep.room.controller) {
-            creep.moveTo(creep.room.controller.pos.x + 3, creep.room.controller.pos.y + 3);
+            var px = Math.max(1, Math.min(48, creep.room.controller.pos.x + 3));
+            var py = Math.max(1, Math.min(48, creep.room.controller.pos.y + 3));
+            movement.moveTo(creep, new RoomPosition(px, py, creep.room.name), {
+                visualizePathStyle: { stroke: '#ffaa00' },
+                range: 0,
+                reason: 'repairer-wait'
+            });
         }
     }
 };

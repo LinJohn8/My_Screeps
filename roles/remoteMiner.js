@@ -8,6 +8,8 @@
  *   4. 送完回去继续挖
  *   5. 遇到敌人 → 撤退回家
  */
+var movement = require('../utils/movement');
+
 var roleRemoteMiner = {
 
     run: function (creep) {
@@ -67,7 +69,8 @@ var roleRemoteMiner = {
         if (!creep.memory.sourceId) {
             var sources = creep.room.find(FIND_SOURCES);
             if (sources.length > 0) {
-                creep.memory.sourceId = sources[0].id;
+                var closest = movement.closestByPathOrRange(creep, sources) || sources[0];
+                creep.memory.sourceId = closest.id;
             } else {
                 this._goHome(creep);
                 return;
@@ -82,12 +85,16 @@ var roleRemoteMiner = {
 
         var err = creep.harvest(source);
         if (err === ERR_NOT_IN_RANGE) {
-            creep.moveTo(source, { visualizePathStyle: { stroke: '#ff8800' }, reusePath: 20 });
+            movement.moveTo(creep, source, {
+                visualizePathStyle: { stroke: '#ff8800' },
+                reusePath: 20,
+                reason: 'remote-harvest'
+            });
         }
     },
 
     _deliver: function (creep) {
-        var target = creep.pos.findClosestByPath(FIND_STRUCTURES, {
+        var target = movement.closestByPathOrRange(creep, FIND_STRUCTURES, {
             filter: function (s) {
                 return (s.structureType === STRUCTURE_SPAWN ||
                         s.structureType === STRUCTURE_EXTENSION ||
@@ -100,7 +107,11 @@ var roleRemoteMiner = {
         if (target) {
             var err = creep.transfer(target, RESOURCE_ENERGY);
             if (err === ERR_NOT_IN_RANGE) {
-                creep.moveTo(target, { visualizePathStyle: { stroke: '#ffffff' }, reusePath: 20 });
+                movement.moveTo(creep, target, {
+                    visualizePathStyle: { stroke: '#ffffff' },
+                    reusePath: 20,
+                    reason: 'remote-deliver'
+                });
             }
         }
     },
@@ -112,10 +123,11 @@ var roleRemoteMiner = {
     },
 
     _moveToward: function (creep, targetRoom) {
-        creep.moveTo(new RoomPosition(25, 25, targetRoom), {
+        movement.moveToRoom(creep, targetRoom, {
             visualizePathStyle: { stroke: '#ff8800' },
             reusePath: 50,
-            maxRooms: 10
+            maxRooms: 10,
+            reason: 'remote-room'
         });
     }
 };

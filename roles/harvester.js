@@ -17,6 +17,8 @@
  *   A 有 3 个槽位，3 人在采，1 人装满去送货
  *   第 4 人看到承诺已满 → 安心去 B，不来回拉扯
  */
+var movement = require('../utils/movement');
+
 var roleHarvester = {
 
     run: function (creep) {
@@ -41,7 +43,7 @@ var roleHarvester = {
 
     deliverEnergy: function (creep) {
         creep.memory.status = '送能';
-        var target = creep.pos.findClosestByPath(FIND_STRUCTURES, {
+        var target = movement.closestByPathOrRange(creep, FIND_STRUCTURES, {
             filter: function (s) {
                 return (s.structureType === STRUCTURE_SPAWN ||
                         s.structureType === STRUCTURE_EXTENSION ||
@@ -55,7 +57,11 @@ var roleHarvester = {
         if (target) {
             var err = creep.transfer(target, RESOURCE_ENERGY);
             if (err === ERR_NOT_IN_RANGE) {
-                creep.moveTo(target, { visualizePathStyle: { stroke: '#ffffff' }, reusePath: 20 });
+                movement.moveTo(creep, target, {
+                    visualizePathStyle: { stroke: '#ffffff' },
+                    reusePath: 20,
+                    reason: 'deliver'
+                });
             } else if (err !== OK && err !== ERR_FULL) {
                 creep.memory.working = false;
             }
@@ -66,7 +72,10 @@ var roleHarvester = {
         creep.memory.status = '溢出升级';
         if (creep.room.controller && creep.room.controller.my) {
             if (creep.upgradeController(creep.room.controller) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(creep.room.controller, { visualizePathStyle: { stroke: '#aaaaaa' } });
+                movement.moveTo(creep, creep.room.controller, {
+                    visualizePathStyle: { stroke: '#aaaaaa' },
+                    reason: 'overflow-upgrade'
+                });
             }
         }
     },
@@ -103,9 +112,13 @@ var roleHarvester = {
         if (!bestSource) {
             creep.memory.status = '等待刷新';
             // 所有源都没能量 → 去最近的那个旁边等
-            var nearest = creep.pos.findClosestByPath(FIND_SOURCES);
+            var nearest = movement.closestByPathOrRange(creep, FIND_SOURCES);
             if (nearest && creep.pos.getRangeTo(nearest) > 1) {
-                creep.moveTo(nearest, { visualizePathStyle: { stroke: '#ffaa00' }, reusePath: 20 });
+                movement.moveTo(creep, nearest, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reusePath: 20,
+                    reason: 'wait-source'
+                });
             }
             return;
         }
@@ -189,10 +202,7 @@ var roleHarvester = {
                 var y = source.pos.y + dy;
                 if (x < 0 || x > 49 || y < 0 || y > 49) continue;
 
-                var terrain = room.getTerrain().get(x, y);
-                if (terrain === TERRAIN_MASK_WALL) continue;
-
-                count++;
+                if (movement.isWalkable(room, x, y, { ignoreCreeps: true })) count++;
             }
         }
         return count;
@@ -205,9 +215,14 @@ var roleHarvester = {
         var err = creep.harvest(source);
         if (err === ERR_NOT_IN_RANGE) {
             creep.memory.status = '前往源';
-            creep.moveTo(source, { visualizePathStyle: { stroke: '#ffaa00' }, reusePath: 20 });
+            movement.moveTo(creep, source, {
+                visualizePathStyle: { stroke: '#ffaa00' },
+                reusePath: 20,
+                reason: 'harvest'
+            });
         } else if (err === OK) {
             creep.memory.status = '采集';
+            require('../utils/stats').recordIncome(creep.room, creep.getActiveBodyparts(WORK) * 2);
         }
     }
 };

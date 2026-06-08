@@ -4,6 +4,8 @@
  * 行为: 出生 → 走向目标房间 → 到达后记录信息 → 下一个
  *       无法到达（ERR_NO_PATH）→ 标记房间不可达 → 回家转换
  */
+var movement = require('../utils/movement');
+
 var roleScout = {
 
     run: function (creep) {
@@ -46,6 +48,8 @@ var roleScout = {
                     var nb = nextExits[d];
                     // 跳过不可达和已探索的房间
                     if (Memory.unreachableRooms && Memory.unreachableRooms[nb]) continue;
+                    if (Memory.roomScout && Memory.roomScout[nb] &&
+                            Memory.roomScout[nb].hostiles > 0) continue;
                     if (!Memory.explored || !Memory.explored[nb]) {
                         creep.memory.scoutTarget = nb;
                         return;
@@ -59,20 +63,22 @@ var roleScout = {
         }
 
         // 走向目标
-        var err = creep.moveTo(new RoomPosition(25, 25, target), {
+        var err = movement.moveToRoom(creep, target, {
             visualizePathStyle: { stroke: '#ff00ff' },
             reusePath: 50,
-            maxRooms: 10
+            maxRooms: 10,
+            reason: 'scout'
         });
 
         // ERR_BUSY = 正在出生，忽略
         if (err === ERR_BUSY) return;
 
-        if (err === ERR_NO_PATH) {
+        var stuck = creep.memory.moveState ? (creep.memory.moveState.stuck || 0) : 0;
+        if (err === ERR_NO_PATH || stuck > 25) {
             // 无法到达 → 标记 + 回家转换
             if (!Memory.unreachableRooms) Memory.unreachableRooms = {};
             Memory.unreachableRooms[target] = Game.time;
-            console.log('⚠ [侦察] ' + creep.name + ' 无法到达 ' + target + '，回家转换');
+            console.log('⚠ [侦察] ' + creep.name + ' 无法到达/长期卡住 ' + target + '，回家转换');
             creep.memory.scoutTarget = null;
             creep.memory.convertAtHome = true;
             this._goHome(creep);
@@ -84,9 +90,11 @@ var roleScout = {
         if (!homeRoom) return;
 
         // 优先用主循环设置的 exploreTarget
-        if (Memory.rooms[homeRoom] && Memory.rooms[homeRoom].exploreTarget) {
+        if (Memory.rooms && Memory.rooms[homeRoom] && Memory.rooms[homeRoom].exploreTarget) {
             var et = Memory.rooms[homeRoom].exploreTarget;
-            if (!Memory.unreachableRooms || !Memory.unreachableRooms[et]) {
+            if ((!Memory.unreachableRooms || !Memory.unreachableRooms[et]) &&
+                    (!Memory.roomScout || !Memory.roomScout[et] ||
+                     !Memory.roomScout[et].hostiles || Memory.roomScout[et].hostiles <= 0)) {
                 creep.memory.scoutTarget = et;
                 return;
             }
@@ -98,6 +106,8 @@ var roleScout = {
             for (var dir in exits) {
                 var neighbor = exits[dir];
                 if (Memory.unreachableRooms && Memory.unreachableRooms[neighbor]) continue;
+                if (Memory.roomScout && Memory.roomScout[neighbor] &&
+                        Memory.roomScout[neighbor].hostiles > 0) continue;
                 if (!Memory.explored || !Memory.explored[neighbor]) {
                     creep.memory.scoutTarget = neighbor;
                     return;
@@ -114,6 +124,8 @@ var roleScout = {
                     for (var d2 in nbExits) {
                         var farRoom = nbExits[d2];
                         if (Memory.unreachableRooms && Memory.unreachableRooms[farRoom]) continue;
+                        if (Memory.roomScout && Memory.roomScout[farRoom] &&
+                                Memory.roomScout[farRoom].hostiles > 0) continue;
                         if (!Memory.explored || !Memory.explored[farRoom]) {
                             creep.memory.scoutTarget = farRoom;
                             return;
@@ -130,9 +142,10 @@ var roleScout = {
     _goHome: function (creep) {
         var homeRoom = creep.memory.homeRoom;
         if (!homeRoom) { creep.suicide(); return; }
-        creep.moveTo(new RoomPosition(25, 25, homeRoom), {
+        movement.moveToRoom(creep, homeRoom, {
             visualizePathStyle: { stroke: '#ff00ff' },
-            reusePath: 50
+            reusePath: 50,
+            reason: 'scout-home'
         });
     }
 };

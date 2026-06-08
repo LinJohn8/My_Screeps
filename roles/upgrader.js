@@ -4,6 +4,8 @@
  * 行为: 取能量 → 升级
  * 取能优先级: 地面掉落 > Container > Storage > Spawn > 直接挖
  */
+var movement = require('../utils/movement');
+
 var roleUpgrader = {
 
     run: function (creep) {
@@ -26,10 +28,11 @@ var roleUpgrader = {
             var err = creep.upgradeController(creep.room.controller);
             if (err === ERR_NOT_IN_RANGE) {
                 creep.memory.status = '前往控制器';
-                creep.moveTo(creep.room.controller, {
+                movement.moveTo(creep, creep.room.controller, {
                     visualizePathStyle: { stroke: '#00ff00' },
                     reusePath: 20,
-                    range: 1
+                    range: 3,
+                    reason: 'upgrade'
                 });
             } else {
                 creep.memory.status = '升级';
@@ -44,13 +47,16 @@ var roleUpgrader = {
 
     getEnergy: function (creep) {
         // 1. 捡地上的能量
-        var dropped = creep.pos.findClosestByPath(FIND_DROPPED_RESOURCES, {
+        var dropped = movement.closestByPathOrRange(creep, FIND_DROPPED_RESOURCES, {
             filter: function (r) { return r.resourceType === RESOURCE_ENERGY && r.amount > 20; }
         });
         if (dropped) {
             if (creep.pickup(dropped) === ERR_NOT_IN_RANGE) {
                 creep.memory.status = '前往掉落的能量';
-                creep.moveTo(dropped, { visualizePathStyle: { stroke: '#ffaa00' } });
+                movement.moveTo(creep, dropped, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reason: 'upgrader-pickup'
+                });
             } else {
                 creep.memory.status = '捡能';
             }
@@ -58,7 +64,7 @@ var roleUpgrader = {
         }
 
         // 2. Container / Storage
-        var container = creep.pos.findClosestByPath(FIND_STRUCTURES, {
+        var container = movement.closestByPathOrRange(creep, FIND_STRUCTURES, {
             filter: function (s) {
                 return (s.structureType === STRUCTURE_CONTAINER ||
                         s.structureType === STRUCTURE_STORAGE) &&
@@ -67,13 +73,16 @@ var roleUpgrader = {
         });
         if (container) {
             if (creep.withdraw(container, RESOURCE_ENERGY) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(container, { visualizePathStyle: { stroke: '#ffaa00' } });
+                movement.moveTo(creep, container, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reason: 'upgrader-withdraw'
+                });
             }
             return;
         }
 
         // 3. Spawn/Extension 借
-        var spawn = creep.pos.findClosestByPath(FIND_STRUCTURES, {
+        var spawn = movement.closestByPathOrRange(creep, FIND_STRUCTURES, {
             filter: function (s) {
                 return (s.structureType === STRUCTURE_SPAWN ||
                         s.structureType === STRUCTURE_EXTENSION) &&
@@ -82,27 +91,41 @@ var roleUpgrader = {
         });
         if (spawn) {
             if (creep.withdraw(spawn, RESOURCE_ENERGY) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(spawn, { visualizePathStyle: { stroke: '#ffaa00' } });
+                movement.moveTo(creep, spawn, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reason: 'upgrader-borrow'
+                });
             }
             return;
         }
 
         // 4. 直接挖
-        var source = creep.pos.findClosestByPath(FIND_SOURCES_ACTIVE);
+        var source = movement.closestByPathOrRange(creep, FIND_SOURCES_ACTIVE);
         if (source) {
             if (creep.harvest(source) === ERR_NOT_IN_RANGE) {
-                creep.moveTo(source, { visualizePathStyle: { stroke: '#ffaa00' } });
+                movement.moveTo(creep, source, {
+                    visualizePathStyle: { stroke: '#ffaa00' },
+                    reason: 'upgrader-harvest'
+                });
             }
         } else if (creep.room.controller) {
-            creep.moveTo(creep.room.controller.pos.x + 2, creep.room.controller.pos.y + 2);
+            var px = Math.max(1, Math.min(48, creep.room.controller.pos.x + 2));
+            var py = Math.max(1, Math.min(48, creep.room.controller.pos.y + 2));
+            movement.moveTo(creep, new RoomPosition(px, py, creep.room.name), {
+                visualizePathStyle: { stroke: '#ffaa00' },
+                range: 0,
+                reason: 'upgrader-wait'
+            });
         }
     },
 
     goHome: function (creep) {
         var homeRoom = creep.memory.homeRoom;
         if (!homeRoom) return;
-        var exit = creep.pos.findClosestByPath(FIND_EXIT_TOP);
-        if (exit) creep.moveTo(exit);
+        movement.moveToRoom(creep, homeRoom, {
+            visualizePathStyle: { stroke: '#00ff00' },
+            reason: 'upgrader-home'
+        });
     }
 };
 

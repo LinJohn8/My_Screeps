@@ -13,6 +13,7 @@
  *   path: ['homeRoom', 'room1', 'room2', ...]  // 走过的房间链
  *   visitedDirs: ['TOP', 'RIGHT', ...]           // 已完成的方向
  */
+var movement = require('../utils/movement');
 
 // 四个基本方向
 var CARDINAL_DIRS = [
@@ -294,10 +295,12 @@ var roleObserver = {
     //  移动到目标房间
     // ================================================================
     _moveToward: function (creep, targetRoom) {
-        var err = creep.moveTo(new RoomPosition(25, 25, targetRoom), {
+        var err = movement.moveToRoom(creep, targetRoom, {
             visualizePathStyle: { stroke: '#ff88ff' },
             reusePath: 50,
-            maxRooms: 30
+            maxRooms: 30,
+            allowHostileRooms: true,
+            reason: 'observer-room'
         });
         // ERR_BUSY(-4) 是刚孵化还没出笼，ERR_TIRED 是冷却，都静默忽略
         if (err !== OK && err !== ERR_TIRED && err !== ERR_BUSY) {
